@@ -3,7 +3,7 @@
 Ollama UI — local server + SQLite persistence + task scheduler.
 Run with: python3 server.py
 """
-import json, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib
+import json, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib, concurrent.futures, socket
 from pathlib import Path
 
 PORT           = 5000
@@ -174,6 +174,16 @@ def init_db():
                 started_at    TEXT,
                 finished_at   TEXT
             );
+            CREATE TABLE IF NOT EXISTS network_hosts (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                ip          TEXT NOT NULL,
+                mac         TEXT,
+                ollama_port INTEGER NOT NULL DEFAULT 11434,
+                priority    INTEGER NOT NULL,
+                enabled     INTEGER NOT NULL DEFAULT 1,
+                created_at  TEXT
+            );
         ''')
         # Migrations for existing databases
         for sql in [
@@ -199,6 +209,23 @@ def init_db():
             except Exception:
                 pass
 
+        # Seed default hosts on first run — matches the legacy
+        # DEFAULT_OLLAMA_ENDPOINT fallback order (205 -> 251 -> 240).
+        count = db.execute('SELECT COUNT(*) c FROM network_hosts').fetchone()['c']
+        if count == 0:
+            now = datetime.datetime.now().isoformat()
+            seeds = [
+                ('host-205', 'Host .205',       '192.168.1.205', 1),
+                ('host-251', 'Host .251',       '192.168.1.251', 2),
+                ('host-240', 'Atlantis / self', '192.168.1.240', 3),
+            ]
+            for hid, name, ip, priority in seeds:
+                db.execute(
+                    'INSERT INTO network_hosts (id,name,ip,mac,ollama_port,priority,enabled,created_at) '
+                    'VALUES (?,?,?,?,?,?,?,?)',
+                    (hid, name, ip, None, 11434, priority, 1, now)
+                )
+
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
 def row_to_dict(row):
@@ -206,6 +233,52 @@ def row_to_dict(row):
 
 def rows_to_list(rows):
     return [dict(r) for r in rows]
+
+def regenerate_ollama_endpoint_setting(db):
+    """Rebuild settings.endpoint from network_hosts (enabled rows, ordered
+    by priority), always appending localhost last as the final fallback.
+    resolve_ollama_endpoint() consumes this value unchanged — see its
+    docstring at the top of this file."""
+    rows = db.execute(
+        'SELECT ip, ollama_port FROM network_hosts WHERE enabled=1 ORDER BY priority'
+    ).fetchall()
+    candidates = [f"http://{r['ip']}:{r['ollama_port']}" for r in rows]
+    candidates.append('http://localhost:11434')
+    db.execute('INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)',
+               ('endpoint', json.dumps(','.join(candidates))))
+
+def ping_host(ip):
+    try:
+        result = subprocess.run(['ping', '-c', '1', ip],
+                                 capture_output=True, timeout=1.5)
+        return result.returncode == 0
+    except Exception:
+        return False
+
+def check_ollama(ip, port):
+    try:
+        with urllib.request.urlopen(f'http://{ip}:{port}/api/tags', timeout=1.5) as resp:
+            data = json.loads(resp.read())
+            return True, len(data.get('models', []))
+    except Exception:
+        return False, 0
+
+def check_host_status(ip, port):
+    online = ping_host(ip)
+    ollama_running, model_count = check_ollama(ip, port) if online else (False, 0)
+    return {'online': online, 'ollamaRunning': ollama_running, 'modelCount': model_count}
+
+def send_wol_packet(mac):
+    mac_bytes = bytes.fromhex(mac.replace(':', '').replace('-', ''))
+    if len(mac_bytes) != 6:
+        raise ValueError('MAC address must be 6 bytes')
+    packet = b'\xff' * 6 + mac_bytes * 16
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    try:
+        sock.sendto(packet, ('255.255.255.255', 9))
+    finally:
+        sock.close()
 
 # ── Schedule logic ─────────────────────────────────────────────────────────────
 
@@ -386,6 +459,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         p = self.path.split('?')[0]
         if   p == '/api/settings':          self._get_settings()
         elif p == '/api/agents':            self._get_agents()
+        elif p == '/api/hosts':             self._get_hosts()
         elif p == '/api/threads':           self._get_threads()
         elif p.startswith('/api/threads/') and p.endswith('/messages'):
             self._get_messages(p.split('/')[3])
@@ -433,6 +507,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         body = self._read_body()
         if   p == '/api/settings':          self._post_settings(body)
         elif p == '/api/agents':            self._post_agent(body)
+        elif p == '/api/hosts':             self._post_host(body)
+        elif p == '/api/hosts/reorder':     self._reorder_hosts(body)
+        elif p == '/api/hosts/check':       self._check_hosts()
+        elif p.startswith('/api/hosts/') and p.endswith('/wake'):
+            self._wake_host(p.split('/')[3])
         elif p == '/api/threads':           self._post_thread(body)
         elif p.startswith('/api/threads/') and p.endswith('/messages'):
             self._post_messages(p.split('/')[3], body)
@@ -470,6 +549,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         body = self._read_body()
         if p.startswith('/api/agents/'):
             self._put_agent(p.split('/')[3], body)
+        elif p.startswith('/api/hosts/'):
+            self._put_host(p.split('/')[3], body)
         elif p.startswith('/api/threads/') and not p.endswith('/messages'):
             self._put_thread(p.split('/')[3], body)
         elif p.startswith('/api/tasks/') and not p.endswith('/runs'):
@@ -487,6 +568,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         p = self.path.split('?')[0]
         if   p == '/api/data':              self._clear_data()
         elif p.startswith('/api/agents/'):  self._delete_agent(p.split('/')[3])
+        elif p.startswith('/api/hosts/'):   self._delete_host(p.split('/')[3])
         elif p.startswith('/api/threads/') and p.endswith('/messages'):
             self._delete_messages(p.split('/')[3])
         elif p.startswith('/api/threads/'): self._delete_thread(p.split('/')[3])
@@ -593,6 +675,94 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             'webAccess':  bool(row['web_access']),
             'tools': tools,
         }
+
+    # ── Network hosts ──────────────────────────────────────────────────────
+
+    def _host_out(self, row):
+        return {
+            'id': row['id'], 'name': row['name'], 'ip': row['ip'],
+            'mac': row['mac'], 'ollamaPort': row['ollama_port'],
+            'priority': row['priority'], 'enabled': bool(row['enabled']),
+        }
+
+    def _get_hosts(self):
+        with get_db() as db:
+            rows = rows_to_list(db.execute(
+                'SELECT * FROM network_hosts ORDER BY priority'
+            ).fetchall())
+        self._json([self._host_out(r) for r in rows])
+
+    def _post_host(self, body):
+        name = (body.get('name') or '').strip()
+        ip   = (body.get('ip') or '').strip()
+        if not name or not ip or not body.get('id'):
+            return self.send_error(400)
+        with get_db() as db:
+            max_row = db.execute('SELECT MAX(priority) m FROM network_hosts').fetchone()
+            priority = (max_row['m'] or 0) + 1
+            now = datetime.datetime.now().isoformat()
+            db.execute(
+                'INSERT INTO network_hosts (id,name,ip,mac,ollama_port,priority,enabled,created_at) '
+                'VALUES (?,?,?,?,?,?,?,?)',
+                (body['id'], name, ip, (body.get('mac') or '').strip() or None,
+                 int(body.get('ollamaPort') or 11434), priority, 1, now)
+            )
+            regenerate_ollama_endpoint_setting(db)
+        self._json({'ok': True})
+
+    def _put_host(self, id, body):
+        name = (body.get('name') or '').strip()
+        ip   = (body.get('ip') or '').strip()
+        if not name or not ip:
+            return self.send_error(400)
+        with get_db() as db:
+            db.execute(
+                'UPDATE network_hosts SET name=?, ip=?, mac=?, ollama_port=?, enabled=? WHERE id=?',
+                (name, ip, (body.get('mac') or '').strip() or None,
+                 int(body.get('ollamaPort') or 11434),
+                 1 if body.get('enabled', True) else 0, id)
+            )
+            regenerate_ollama_endpoint_setting(db)
+        self._json({'ok': True})
+
+    def _delete_host(self, id):
+        with get_db() as db:
+            db.execute('DELETE FROM network_hosts WHERE id=?', (id,))
+            regenerate_ollama_endpoint_setting(db)
+        self._json({'ok': True})
+
+    def _reorder_hosts(self, body):
+        order = body.get('order') or []
+        with get_db() as db:
+            for i, hid in enumerate(order, start=1):
+                db.execute('UPDATE network_hosts SET priority=? WHERE id=?', (i, hid))
+            regenerate_ollama_endpoint_setting(db)
+        self._json({'ok': True})
+
+    def _check_hosts(self):
+        with get_db() as db:
+            rows = rows_to_list(db.execute(
+                'SELECT id, ip, ollama_port FROM network_hosts'
+            ).fetchall())
+        results = {}
+        if rows:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(rows)) as pool:
+                futures = {pool.submit(check_host_status, r['ip'], r['ollama_port']): r['id']
+                           for r in rows}
+                for fut in concurrent.futures.as_completed(futures):
+                    results[futures[fut]] = fut.result()
+        self._json(results)
+
+    def _wake_host(self, id):
+        with get_db() as db:
+            row = db.execute('SELECT mac FROM network_hosts WHERE id=?', (id,)).fetchone()
+        if not row or not row['mac']:
+            return self._json({'ok': False, 'error': 'No MAC address saved for this host'}, 400)
+        try:
+            send_wol_packet(row['mac'])
+        except Exception as e:
+            return self._json({'ok': False, 'error': str(e)}, 400)
+        self._json({'ok': True})
 
     # ── Threads ─────────────────────────────────────────────────────────────
 
@@ -1882,7 +2052,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     # ── Models (Ollama library) ──────────────────────────────────────────────
 
-    def _models_endpoint(self):
+    def _models_endpoint(self, host_id=None):
+        if host_id:
+            with get_db() as db:
+                row = db.execute(
+                    'SELECT ip, ollama_port FROM network_hosts WHERE id=?', (host_id,)
+                ).fetchone()
+            if row:
+                return f"http://{row['ip']}:{row['ollama_port']}"
         raw = None
         try:
             with get_db() as db:
@@ -1896,8 +2073,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return resolve_ollama_endpoint(raw)
 
     def _models_local(self):
+        qs = self.path.split('?', 1)[-1] if '?' in self.path else ''
+        host_id = urllib.parse.parse_qs(qs).get('host_id', [''])[0].strip()
         try:
-            with urllib.request.urlopen(f'{self._models_endpoint()}/api/tags', timeout=10) as resp:
+            with urllib.request.urlopen(f'{self._models_endpoint(host_id)}/api/tags', timeout=10) as resp:
                 self._json(json.loads(resp.read()))
         except Exception as e:
             self._json({'models': [], 'error': str(e)}, 502)
@@ -2002,6 +2181,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _models_pull(self, body):
         name = (body.get('name') or '').strip()
+        host_id = (body.get('hostId') or '').strip()
         if not name:
             return self.send_error(400)
         self.send_response(200)
@@ -2011,7 +2191,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         try:
             req = urllib.request.Request(
-                f'{self._models_endpoint()}/api/pull',
+                f'{self._models_endpoint(host_id)}/api/pull',
                 data=json.dumps({'model': name, 'stream': True}).encode(),
                 headers={'Content-Type': 'application/json'})
             with urllib.request.urlopen(req, timeout=3600) as resp:
@@ -2029,12 +2209,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _models_delete(self):
         qs = self.path.split('?', 1)[-1] if '?' in self.path else ''
-        name = urllib.parse.parse_qs(qs).get('name', [''])[0].strip()
+        params = urllib.parse.parse_qs(qs)
+        name = params.get('name', [''])[0].strip()
+        host_id = params.get('host_id', [''])[0].strip()
         if not name:
             return self.send_error(400)
         try:
             req = urllib.request.Request(
-                f'{self._models_endpoint()}/api/delete',
+                f'{self._models_endpoint(host_id)}/api/delete',
                 data=json.dumps({'model': name}).encode(),
                 headers={'Content-Type': 'application/json'}, method='DELETE')
             with urllib.request.urlopen(req, timeout=30):

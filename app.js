@@ -84,6 +84,7 @@ function switchSection(name) {
   const scrollable = curEl?.querySelector('#chat-window, .editor-area, #settings-main, #brain-chat-window, #dbg-log-body');
   if (scrollable) sectionScrolls[activeSection] = scrollable.scrollTop;
   if (activeSection === 'debug' || activeSection === 'pipelines') stopDebug();
+  if (activeSection === 'hosts') stopHostsPolling();
 
   document.querySelectorAll('.section').forEach(el => el.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
@@ -104,6 +105,7 @@ function switchSection(name) {
   if (name === 'pipelines') { initPipeCanvas(); loadPipelines().then(renderPipeList); if (pipeDebugVisible) initDebug(); }
   if (name === 'brain')    initBrain();
   if (name === 'models')   initModels();
+  if (name === 'hosts')    initHosts();
   if (name === 'code')     initCode();
   if (name === 'settings') loadSettings().then(initSettingsForm);
 }
@@ -5031,7 +5033,13 @@ document.getElementById('dbg-restart-btn').addEventListener('click', async () =>
 
 // ── Models section ────────────────────────────────────────────────────────────
 const modelsUI = { inited: false, sysinfo: null, installed: [], results: [], query: '', page: 1,
-                   cap: '', sort: '', fit: '', minPulls: 0 };
+                   cap: '', sort: '', fit: '', minPulls: 0, hostId: '' };
+
+const hostsUI = { inited: false };
+let hosts = [];
+let hostStatus = {};
+let hostsPollTimer = null;
+let hostsEditingId = null;
 
 function initModels() {
   if (!modelsUI.inited) {
@@ -5058,9 +5066,23 @@ function initModels() {
     document.getElementById('models-filter-pulls').addEventListener('change', e => {
       modelsUI.minPulls = Number(e.target.value); renderHubResults();
     });
+    document.getElementById('models-host-select').addEventListener('change', e => {
+      modelsUI.hostId = e.target.value;
+      document.getElementById('models-hw-chips').style.display = modelsUI.hostId ? 'none' : '';
+      loadLocalModels();
+    });
     loadSysinfo();
     searchHub();
   }
+  // Host selection always resets to Auto when the tab is (re-)activated.
+  modelsUI.hostId = '';
+  document.getElementById('models-hw-chips').style.display = '';
+  loadHosts().then(() => {
+    const sel = document.getElementById('models-host-select');
+    sel.innerHTML = '<option value="">Auto</option>' +
+      hosts.map(h => `<option value="${h.id}">${escHtml(h.name)}</option>`).join('');
+    sel.value = '';
+  });
   loadLocalModels();
 }
 
@@ -5077,8 +5099,10 @@ async function loadSysinfo() {
 
 async function loadLocalModels() {
   let data;
-  try { data = await api('GET', '/api/models/local'); }
-  catch { data = { models: [] }; }
+  try {
+    const q = modelsUI.hostId ? `?host_id=${encodeURIComponent(modelsUI.hostId)}` : '';
+    data = await api('GET', `/api/models/local${q}`);
+  } catch { data = { models: [] }; }
   modelsUI.installed = data.models || [];
   document.getElementById('models-installed-count').textContent = `(${modelsUI.installed.length})`;
   const list = document.getElementById('models-installed-list');
@@ -5126,7 +5150,7 @@ function usableVramGB(s) { return (s.vram_gb || 0) * 0.85; }
 
 function fitTier(gb) {
   const s = modelsUI.sysinfo;
-  if (gb == null || !s || !s.ram_gb) return null;
+  if (modelsUI.hostId || gb == null || !s || !s.ram_gb) return null;
   if (s.vram_gb && gb <= usableVramGB(s)) return { cls: 'fit-gpu', dot: '◉', label: 'GPU fit' };
   if (gb <= s.ram_gb * 0.65)              return { cls: 'fit-cpu', dot: '◎', label: 'CPU fit' };
   return { cls: 'fit-no', dot: '✕', label: 'Too large' };
@@ -5269,7 +5293,7 @@ async function installModel(name, card) {
     const resp = await fetch('/api/models/pull', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, hostId: modelsUI.hostId }),
     });
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
@@ -5313,9 +5337,137 @@ async function installModel(name, card) {
 
 async function deleteModel(name) {
   if (!confirm(`Delete model ${name}?`)) return;
-  try { await api('DELETE', `/api/models?name=${encodeURIComponent(name)}`); }
+  const q = modelsUI.hostId ? `&host_id=${encodeURIComponent(modelsUI.hostId)}` : '';
+  try { await api('DELETE', `/api/models?name=${encodeURIComponent(name)}${q}`); }
   catch (e) { alert('Delete failed: ' + e.message); }
   loadLocalModels();
+}
+
+// ── Hosts ─────────────────────────────────────────────────────────────────
+
+async function loadHosts() {
+  try { hosts = await api('GET', '/api/hosts'); }
+  catch (_) { hosts = []; }
+}
+
+function stopHostsPolling() {
+  if (hostsPollTimer) { clearInterval(hostsPollTimer); hostsPollTimer = null; }
+}
+
+async function checkAllHosts() {
+  try { hostStatus = await api('POST', '/api/hosts/check'); }
+  catch (_) { /* keep last known status */ }
+}
+
+function initHosts() {
+  if (!hostsUI.inited) {
+    hostsUI.inited = true;
+    document.getElementById('hosts-add-btn').addEventListener('click', () => openHostForm(null));
+    document.getElementById('host-form-cancel-btn').addEventListener('click', closeHostForm);
+    document.getElementById('host-form-save-btn').addEventListener('click', saveHostFromForm);
+  }
+  stopHostsPolling();
+  loadHosts().then(async () => {
+    await checkAllHosts();
+    renderHostList();
+    hostsPollTimer = setInterval(async () => { await checkAllHosts(); renderHostList(); }, 10000);
+  });
+}
+
+function renderHostList() {
+  const grid = document.getElementById('hosts-grid');
+  if (!hosts.length) {
+    grid.innerHTML = '<p class="empty-state">No hosts yet — add one to get started.</p>';
+    return;
+  }
+  grid.innerHTML = hosts.map(h => {
+    const st = hostStatus[h.id] || { online: false, ollamaRunning: false, modelCount: 0 };
+    const dotClass = st.ollamaRunning ? 'host-dot-green' : st.online ? 'host-dot-yellow' : 'host-dot-gray';
+    const dotTitle = st.ollamaRunning ? `Online — Ollama running (${st.modelCount} models)`
+                    : st.online        ? 'Online — Ollama not detected'
+                    : 'Offline';
+    return `<div class="host-card" data-id="${h.id}">
+      <div class="host-card-top">
+        <span class="host-dot ${dotClass}" title="${escHtml(dotTitle)}"></span>
+        <span class="host-name">${escHtml(h.name)}</span>
+        ${st.ollamaRunning ? `<span class="host-model-count">${st.modelCount} models</span>` : ''}
+      </div>
+      <div class="host-ip">${escHtml(h.ip)}:${h.ollamaPort}</div>
+      <div class="host-mac">${h.mac ? escHtml(h.mac) : 'No MAC saved'}</div>
+      <div class="host-actions">
+        <button class="btn-sm host-prio-up" title="Higher priority">↑</button>
+        <button class="btn-sm host-prio-down" title="Lower priority">↓</button>
+        <button class="btn-sm host-wake-btn" ${(st.online || !h.mac) ? 'disabled' : ''}>Wake</button>
+        <button class="btn-sm host-edit-btn">Edit</button>
+        <button class="btn-sm host-delete-btn">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  grid.querySelectorAll('.host-prio-up').forEach(b =>
+    b.addEventListener('click', e => moveHostPriority(e.target.closest('.host-card').dataset.id, -1)));
+  grid.querySelectorAll('.host-prio-down').forEach(b =>
+    b.addEventListener('click', e => moveHostPriority(e.target.closest('.host-card').dataset.id, 1)));
+  grid.querySelectorAll('.host-wake-btn').forEach(b =>
+    b.addEventListener('click', e => wakeHost(e.target.closest('.host-card').dataset.id)));
+  grid.querySelectorAll('.host-edit-btn').forEach(b =>
+    b.addEventListener('click', e => openHostForm(e.target.closest('.host-card').dataset.id)));
+  grid.querySelectorAll('.host-delete-btn').forEach(b =>
+    b.addEventListener('click', e => deleteHost(e.target.closest('.host-card').dataset.id)));
+}
+
+async function moveHostPriority(id, dir) {
+  const idx = hosts.findIndex(h => h.id === id);
+  const swapIdx = idx + dir;
+  if (idx < 0 || swapIdx < 0 || swapIdx >= hosts.length) return;
+  [hosts[idx], hosts[swapIdx]] = [hosts[swapIdx], hosts[idx]];
+  renderHostList();
+  await api('POST', '/api/hosts/reorder', { order: hosts.map(h => h.id) }).catch(() => {});
+}
+
+function openHostForm(id) {
+  hostsEditingId = id;
+  const h = id ? hosts.find(x => x.id === id) : null;
+  document.getElementById('host-form-name').value = h ? h.name : '';
+  document.getElementById('host-form-ip').value   = h ? h.ip : '';
+  document.getElementById('host-form-mac').value  = h ? (h.mac || '') : '';
+  document.getElementById('hosts-add-form').hidden = false;
+}
+
+function closeHostForm() {
+  hostsEditingId = null;
+  document.getElementById('hosts-add-form').hidden = true;
+}
+
+async function saveHostFromForm() {
+  const name = document.getElementById('host-form-name').value.trim();
+  const ip   = document.getElementById('host-form-ip').value.trim();
+  const mac  = document.getElementById('host-form-mac').value.trim();
+  if (!name || !ip) { alert('Name and IP are required'); return; }
+  if (hostsEditingId) {
+    const h = hosts.find(x => x.id === hostsEditingId);
+    await api('PUT', `/api/hosts/${hostsEditingId}`,
+      { name, ip, mac, ollamaPort: h.ollamaPort, enabled: h.enabled }).catch(() => {});
+  } else {
+    await api('POST', '/api/hosts', { id: uid(), name, ip, mac, ollamaPort: 11434 }).catch(() => {});
+  }
+  closeHostForm();
+  await loadHosts();
+  await checkAllHosts();
+  renderHostList();
+}
+
+async function deleteHost(id) {
+  if (!confirm('Delete this host?')) return;
+  await api('DELETE', `/api/hosts/${id}`).catch(() => {});
+  hosts = hosts.filter(h => h.id !== id);
+  delete hostStatus[id];
+  renderHostList();
+}
+
+async function wakeHost(id) {
+  try { await api('POST', `/api/hosts/${id}/wake`); }
+  catch (e) { alert('Wake failed: ' + e.message); }
 }
 
 init();
