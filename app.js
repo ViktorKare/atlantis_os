@@ -4933,7 +4933,7 @@ document.getElementById('dbg-restart-btn').addEventListener('click', async () =>
 
 // ── Models section ────────────────────────────────────────────────────────────
 const modelsUI = { inited: false, sysinfo: null, installed: [], results: [], query: '', page: 1,
-                   cap: '', sort: '', fit: '', minPulls: 0 };
+                   cap: '', sort: '', fit: '', minPulls: 0, hostId: '' };
 
 const hostsUI = { inited: false };
 let hosts = [];
@@ -4966,9 +4966,23 @@ function initModels() {
     document.getElementById('models-filter-pulls').addEventListener('change', e => {
       modelsUI.minPulls = Number(e.target.value); renderHubResults();
     });
+    document.getElementById('models-host-select').addEventListener('change', e => {
+      modelsUI.hostId = e.target.value;
+      document.getElementById('models-hw-chips').style.display = modelsUI.hostId ? 'none' : '';
+      loadLocalModels();
+    });
     loadSysinfo();
     searchHub();
   }
+  // Host selection always resets to Auto when the tab is (re-)activated.
+  modelsUI.hostId = '';
+  document.getElementById('models-hw-chips').style.display = '';
+  loadHosts().then(() => {
+    const sel = document.getElementById('models-host-select');
+    sel.innerHTML = '<option value="">Auto</option>' +
+      hosts.map(h => `<option value="${h.id}">${escHtml(h.name)}</option>`).join('');
+    sel.value = '';
+  });
   loadLocalModels();
 }
 
@@ -4985,8 +4999,10 @@ async function loadSysinfo() {
 
 async function loadLocalModels() {
   let data;
-  try { data = await api('GET', '/api/models/local'); }
-  catch { data = { models: [] }; }
+  try {
+    const q = modelsUI.hostId ? `?host_id=${encodeURIComponent(modelsUI.hostId)}` : '';
+    data = await api('GET', `/api/models/local${q}`);
+  } catch { data = { models: [] }; }
   modelsUI.installed = data.models || [];
   document.getElementById('models-installed-count').textContent = `(${modelsUI.installed.length})`;
   const list = document.getElementById('models-installed-list');
@@ -5034,7 +5050,7 @@ function usableVramGB(s) { return (s.vram_gb || 0) * 0.85; }
 
 function fitTier(gb) {
   const s = modelsUI.sysinfo;
-  if (gb == null || !s || !s.ram_gb) return null;
+  if (modelsUI.hostId || gb == null || !s || !s.ram_gb) return null;
   if (s.vram_gb && gb <= usableVramGB(s)) return { cls: 'fit-gpu', dot: '◉', label: 'GPU fit' };
   if (gb <= s.ram_gb * 0.65)              return { cls: 'fit-cpu', dot: '◎', label: 'CPU fit' };
   return { cls: 'fit-no', dot: '✕', label: 'Too large' };
@@ -5177,7 +5193,7 @@ async function installModel(name, card) {
     const resp = await fetch('/api/models/pull', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, hostId: modelsUI.hostId }),
     });
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
@@ -5221,7 +5237,8 @@ async function installModel(name, card) {
 
 async function deleteModel(name) {
   if (!confirm(`Delete model ${name}?`)) return;
-  try { await api('DELETE', `/api/models?name=${encodeURIComponent(name)}`); }
+  const q = modelsUI.hostId ? `&host_id=${encodeURIComponent(modelsUI.hostId)}` : '';
+  try { await api('DELETE', `/api/models?name=${encodeURIComponent(name)}${q}`); }
   catch (e) { alert('Delete failed: ' + e.message); }
   loadLocalModels();
 }
