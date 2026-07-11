@@ -60,6 +60,12 @@ const chatWindow   = document.getElementById('chat-window');
 const userInput    = document.getElementById('user-input');
 const abandonBtn   = document.getElementById('abandon-btn');
 const sendBtn      = document.getElementById('send-btn');
+const homeGreeting     = document.getElementById('home-greeting');
+const homeInput        = document.getElementById('home-input');
+const homeAgentSelect  = document.getElementById('home-agent-select');
+const homeModelSelect  = document.getElementById('home-model-select');
+const homeSendBtn      = document.getElementById('home-send-btn');
+const homeRecent       = document.getElementById('home-recent');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function uid() {
@@ -91,6 +97,7 @@ function switchSection(name) {
     newScrollable.scrollTop = sectionScrolls[name];
   }
 
+  if (name === 'home')     initHome();
   if (name === 'agents')   renderAgentList();
   if (name === 'tasks')    loadTasks().then(() => renderTaskList());
   if (name === 'plans')    loadPlanList().then(() => renderPlanList());
@@ -375,6 +382,82 @@ function refreshAgentDropdown() {
   agentSelect.innerHTML = '<option value="">No agent</option>' +
     agents.map(a => `<option value="${a.id}"${a.id === cur ? ' selected' : ''}>${escHtml(a.name)}</option>`).join('');
 }
+
+// ── Home ──────────────────────────────────────────────────────────────────────
+function homeGreetingText() {
+  const h = new Date().getHours();
+  const part = h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'evening';
+  return `Good ${part}, Viktor`;
+}
+
+function renderHomeRecent() {
+  const recent = state.threads.filter(t => t.name !== '__brain__').slice(0, 3);
+  homeRecent.innerHTML = recent.length
+    ? recent.map(t => `<div class="recent-row" data-id="${t.id}"><span class="recent-name">${escHtml(t.name)}</span></div>`).join('')
+    : '<p class="empty-state">No chats yet</p>';
+  homeRecent.querySelectorAll('.recent-row').forEach(row => {
+    row.addEventListener('click', () => {
+      switchSection('chat');
+      switchThread(row.dataset.id);
+    });
+  });
+}
+
+function initHome() {
+  homeGreeting.textContent = homeGreetingText();
+
+  homeAgentSelect.innerHTML = '<option value="">No agent</option>' +
+    agents.map(a => `<option value="${a.id}">${escHtml(a.name)}</option>`).join('');
+  const defAgent = settings.defaultAgentId ? agents.find(a => a.id === settings.defaultAgentId) : null;
+  homeAgentSelect.value = settings.defaultAgentId || '';
+
+  homeModelSelect.innerHTML = modelSelect.innerHTML;
+  homeModelSelect.value = defAgent ? defAgent.model : state.model;
+
+  renderHomeRecent();
+}
+
+document.querySelectorAll('.idea-chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    homeInput.value = chip.dataset.prompt;
+    homeInput.style.height = 'auto';
+    homeInput.style.height = Math.min(homeInput.scrollHeight, 160) + 'px';
+    homeInput.focus();
+  });
+});
+
+async function sendFromHome() {
+  const text = homeInput.value.trim();
+  if (!text) return;
+
+  const agentId = homeAgentSelect.value || null;
+  const model   = homeModelSelect.value;
+
+  await createThread();
+  state.selectedAgentId = agentId;
+  agentSelect.value     = agentId || '';
+  modelSelect.value     = model;
+  state.model           = model;
+  save();
+
+  switchSection('chat');
+  userInput.value = text;
+  send();
+
+  homeInput.value = '';
+  homeInput.style.height = 'auto';
+}
+
+homeSendBtn.addEventListener('click', sendFromHome);
+
+homeInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendFromHome(); }
+});
+
+homeInput.addEventListener('input', () => {
+  homeInput.style.height = 'auto';
+  homeInput.style.height = Math.min(homeInput.scrollHeight, 160) + 'px';
+});
 
 document.getElementById('new-agent-btn').addEventListener('click', createAgent);
 
@@ -4614,6 +4697,7 @@ async function init() {
 
   if (state.threads.length === 0) createThread();
   else { renderSidebar(); renderChat(); }
+  initHome();
 }
 
 // ── Debug panel ───────────────────────────────────────────────────────────────
