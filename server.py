@@ -174,6 +174,16 @@ def init_db():
                 started_at    TEXT,
                 finished_at   TEXT
             );
+            CREATE TABLE IF NOT EXISTS network_hosts (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                ip          TEXT NOT NULL,
+                mac         TEXT,
+                ollama_port INTEGER NOT NULL DEFAULT 11434,
+                priority    INTEGER NOT NULL,
+                enabled     INTEGER NOT NULL DEFAULT 1,
+                created_at  TEXT
+            );
         ''')
         # Migrations for existing databases
         for sql in [
@@ -198,6 +208,24 @@ def init_db():
                 db.execute(sql)
             except Exception:
                 pass
+
+        # Seed default hosts on first run — matches the legacy
+        # DEFAULT_OLLAMA_ENDPOINT fallback order (205 -> 251 -> 240).
+        with get_db() as db:
+            count = db.execute('SELECT COUNT(*) c FROM network_hosts').fetchone()['c']
+            if count == 0:
+                now = datetime.datetime.now().isoformat()
+                seeds = [
+                    ('host-205', 'Host .205',       '192.168.1.205', 1),
+                    ('host-251', 'Host .251',       '192.168.1.251', 2),
+                    ('host-240', 'Atlantis / self', '192.168.1.240', 3),
+                ]
+                for hid, name, ip, priority in seeds:
+                    db.execute(
+                        'INSERT INTO network_hosts (id,name,ip,mac,ollama_port,priority,enabled,created_at) '
+                        'VALUES (?,?,?,?,?,?,?,?)',
+                        (hid, name, ip, None, 11434, priority, 1, now)
+                    )
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
