@@ -491,6 +491,29 @@
           <label>MAC address <span class="label-hint">(optional — required for Wake)</span></label>
           <input type="text" id="host-form-mac" placeholder="aa:bb:cc:dd:ee:ff">
         </div>
+        <div class="editor-field">
+          <label>Operating system</label>
+          <select id="host-form-os">
+            <option value="" disabled selected>Select OS…</option>
+            <option value="macos">macOS</option>
+            <option value="linux">Linux</option>
+            <option value="windows">Windows</option>
+          </select>
+        </div>
+        <div class="editor-field">
+          <label>GPU architecture</label>
+          <select id="host-form-gpu">
+            <option value="" disabled selected>Select GPU…</option>
+            <option value="nvidia">NVIDIA</option>
+            <option value="apple_silicon">Apple Silicon</option>
+            <option value="amd">AMD</option>
+            <option value="cpu_only">CPU only</option>
+          </select>
+        </div>
+        <div class="editor-field">
+          <label>SSH user</label>
+          <input type="text" id="host-form-ssh-user" value="viktor" placeholder="viktor">
+        </div>
         <div class="editor-actions">
           <button id="host-form-save-btn" class="btn-primary">Save</button>
           <button id="host-form-cancel-btn" class="btn-sm">Cancel</button>

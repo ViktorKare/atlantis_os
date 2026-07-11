@@ -5430,6 +5430,9 @@ function openHostForm(id) {
   document.getElementById('host-form-name').value = h ? h.name : '';
   document.getElementById('host-form-ip').value   = h ? h.ip : '';
   document.getElementById('host-form-mac').value  = h ? (h.mac || '') : '';
+  document.getElementById('host-form-os').value       = h ? (h.os || '') : '';
+  document.getElementById('host-form-gpu').value      = h ? (h.gpuArch || '') : '';
+  document.getElementById('host-form-ssh-user').value = h ? h.sshUser : 'viktor';
   document.getElementById('hosts-add-form').hidden = false;
 }
 
@@ -5439,16 +5442,20 @@ function closeHostForm() {
 }
 
 async function saveHostFromForm() {
-  const name = document.getElementById('host-form-name').value.trim();
-  const ip   = document.getElementById('host-form-ip').value.trim();
-  const mac  = document.getElementById('host-form-mac').value.trim();
+  const name    = document.getElementById('host-form-name').value.trim();
+  const ip      = document.getElementById('host-form-ip').value.trim();
+  const mac     = document.getElementById('host-form-mac').value.trim();
+  const os      = document.getElementById('host-form-os').value;
+  const gpuArch = document.getElementById('host-form-gpu').value;
+  const sshUser = document.getElementById('host-form-ssh-user').value.trim() || 'viktor';
   if (!name || !ip) { alert('Name and IP are required'); return; }
+  if (!os || !gpuArch) { alert('OS and GPU architecture are required'); return; }
   if (hostsEditingId) {
     const h = hosts.find(x => x.id === hostsEditingId);
     await api('PUT', `/api/hosts/${hostsEditingId}`,
-      { name, ip, mac, ollamaPort: h.ollamaPort, enabled: h.enabled }).catch(() => {});
+      { name, ip, mac, ollamaPort: h.ollamaPort, enabled: h.enabled, os, gpuArch, sshUser }).catch(() => {});
   } else {
-    await api('POST', '/api/hosts', { id: uid(), name, ip, mac, ollamaPort: 11434 }).catch(() => {});
+    await api('POST', '/api/hosts', { id: uid(), name, ip, mac, ollamaPort: 11434, os, gpuArch, sshUser }).catch(() => {});
   }
   closeHostForm();
   await loadHosts();
