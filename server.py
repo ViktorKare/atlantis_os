@@ -203,6 +203,9 @@ def init_db():
             'ALTER TABLE jobs ADD COLUMN feedback_of_run TEXT',
             'ALTER TABLE pipeline_runs ADD COLUMN user_feedback TEXT DEFAULT ""',
             'ALTER TABLE pipeline_runs ADD COLUMN parent_run_id TEXT',
+            'ALTER TABLE network_hosts ADD COLUMN os       TEXT',
+            'ALTER TABLE network_hosts ADD COLUMN gpu_arch TEXT',
+            "ALTER TABLE network_hosts ADD COLUMN ssh_user TEXT NOT NULL DEFAULT 'viktor'",
         ]:
             try:
                 db.execute(sql)
@@ -246,6 +249,9 @@ def regenerate_ollama_endpoint_setting(db):
     candidates.append('http://localhost:11434')
     db.execute('INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)',
                ('endpoint', json.dumps(','.join(candidates))))
+
+HOST_OS_VALUES  = {'macos', 'linux', 'windows'}
+HOST_GPU_VALUES = {'nvidia', 'apple_silicon', 'amd', 'cpu_only'}
 
 def ping_host(ip):
     try:
@@ -683,6 +689,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             'id': row['id'], 'name': row['name'], 'ip': row['ip'],
             'mac': row['mac'], 'ollamaPort': row['ollama_port'],
             'priority': row['priority'], 'enabled': bool(row['enabled']),
+            'os': row['os'], 'gpuArch': row['gpu_arch'], 'sshUser': row['ssh_user'],
         }
 
     def _get_hosts(self):
@@ -695,17 +702,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _post_host(self, body):
         name = (body.get('name') or '').strip()
         ip   = (body.get('ip') or '').strip()
+        os_  = (body.get('os') or '').strip() or None
+        gpu  = (body.get('gpuArch') or '').strip() or None
         if not name or not ip or not body.get('id'):
+            return self.send_error(400)
+        if os_ and os_ not in HOST_OS_VALUES:
+            return self.send_error(400)
+        if gpu and gpu not in HOST_GPU_VALUES:
             return self.send_error(400)
         with get_db() as db:
             max_row = db.execute('SELECT MAX(priority) m FROM network_hosts').fetchone()
             priority = (max_row['m'] or 0) + 1
             now = datetime.datetime.now().isoformat()
             db.execute(
-                'INSERT INTO network_hosts (id,name,ip,mac,ollama_port,priority,enabled,created_at) '
-                'VALUES (?,?,?,?,?,?,?,?)',
+                'INSERT INTO network_hosts (id,name,ip,mac,ollama_port,priority,enabled,created_at,os,gpu_arch,ssh_user) '
+                'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                 (body['id'], name, ip, (body.get('mac') or '').strip() or None,
-                 int(body.get('ollamaPort') or 11434), priority, 1, now)
+                 int(body.get('ollamaPort') or 11434), priority, 1, now,
+                 os_, gpu, (body.get('sshUser') or 'viktor').strip())
             )
             regenerate_ollama_endpoint_setting(db)
         self._json({'ok': True})
@@ -713,14 +727,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _put_host(self, id, body):
         name = (body.get('name') or '').strip()
         ip   = (body.get('ip') or '').strip()
+        os_  = (body.get('os') or '').strip() or None
+        gpu  = (body.get('gpuArch') or '').strip() or None
         if not name or not ip:
+            return self.send_error(400)
+        if os_ and os_ not in HOST_OS_VALUES:
+            return self.send_error(400)
+        if gpu and gpu not in HOST_GPU_VALUES:
             return self.send_error(400)
         with get_db() as db:
             db.execute(
-                'UPDATE network_hosts SET name=?, ip=?, mac=?, ollama_port=?, enabled=? WHERE id=?',
+                'UPDATE network_hosts SET name=?, ip=?, mac=?, ollama_port=?, enabled=?, os=?, gpu_arch=?, ssh_user=? WHERE id=?',
                 (name, ip, (body.get('mac') or '').strip() or None,
                  int(body.get('ollamaPort') or 11434),
-                 1 if body.get('enabled', True) else 0, id)
+                 1 if body.get('enabled', True) else 0,
+                 os_, gpu, (body.get('sshUser') or 'viktor').strip(), id)
             )
             regenerate_ollama_endpoint_setting(db)
         self._json({'ok': True})
