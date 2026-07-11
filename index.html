@@ -79,6 +79,15 @@
             <line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/>
           </svg>
         </button>
+
+        <button class="nav-btn" data-section="hosts" title="Hosts">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="3" width="20" height="6" rx="1"/>
+            <rect x="2" y="15" width="20" height="6" rx="1"/>
+            <line x1="6" y1="6" x2="6.01" y2="6"/>
+            <line x1="6" y1="18" x2="6.01" y2="18"/>
+          </svg>
+        </button>
       </div>
       <div class="nav-bottom">
         <button class="nav-btn" data-section="settings" title="Settings">
@@ -396,6 +405,33 @@
         </div>
         <div id="models-results"></div>
       </div>
+    </div>
+
+    <!-- ── Hosts ─────────────────────────────────────────────── -->
+    <div id="section-hosts" class="section">
+      <div id="hosts-toolbar">
+        <h2>Network Hosts</h2>
+        <button id="hosts-add-btn" class="btn-primary">+ Add host</button>
+      </div>
+      <div id="hosts-add-form" class="editor-form" hidden>
+        <div class="editor-field">
+          <label>Name</label>
+          <input type="text" id="host-form-name" placeholder="e.g. Gaming PC">
+        </div>
+        <div class="editor-field">
+          <label>IP address</label>
+          <input type="text" id="host-form-ip" placeholder="192.168.1.x">
+        </div>
+        <div class="editor-field">
+          <label>MAC address <span class="label-hint">(optional — required for Wake)</span></label>
+          <input type="text" id="host-form-mac" placeholder="aa:bb:cc:dd:ee:ff">
+        </div>
+        <div class="editor-actions">
+          <button id="host-form-save-btn" class="btn-primary">Save</button>
+          <button id="host-form-cancel-btn" class="btn-sm">Cancel</button>
+        </div>
+      </div>
+      <div id="hosts-grid"></div>
     </div>
 
     <!-- ── Settings ──────────────────────────────────────────── -->
