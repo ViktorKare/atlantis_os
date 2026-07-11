@@ -3901,6 +3901,8 @@ button:not(:disabled):active {
 
 /* ── Hosts ────────────────────────────────────────────────── */
 
+#section-hosts { flex-direction: column; }
+
 #hosts-toolbar {
   display: flex;
   align-items: center;
@@ -3909,6 +3911,7 @@ button:not(:disabled):active {
   border-bottom: 1px solid var(--border);
 }
 #hosts-toolbar h2 { font-size: 16px; font-weight: 600; }
+#hosts-add-btn { flex: none; }
 
 #hosts-add-form {
   padding: 20px 24px;
@@ -3927,9 +3930,13 @@ button:not(:disabled):active {
 .host-card {
   background: var(--bg2);
   border: 1px solid var(--border);
+  border-left: 3px solid var(--text-dim);
   border-radius: 8px;
   padding: 12px 14px;
 }
+.host-card-up      { border-left-color: var(--success); }
+.host-card-down    { border-left-color: var(--warn); }
+.host-card-offline { border-left-color: var(--text-dim); }
 
 .host-card-top {
   display: flex;
@@ -3956,11 +3963,32 @@ button:not(:disabled):active {
   white-space: nowrap;
 }
 
-.host-model-count {
+/* status pill — always-visible Ollama reachability, replaces hover-only dot tooltip */
+.host-pill {
   margin-left: auto;
-  font-size: 11px;
-  color: var(--text-dim);
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 2px 7px;
+  border-radius: 999px;
   white-space: nowrap;
+}
+.host-pill-up {
+  color: var(--success);
+  background: rgba(74, 222, 128, 0.12);
+  border: 1px solid rgba(74, 222, 128, 0.35);
+}
+.host-pill-down {
+  color: var(--warn);
+  background: rgba(232, 184, 75, 0.12);
+  border: 1px solid rgba(232, 184, 75, 0.35);
+}
+.host-pill-offline {
+  color: var(--text-dim);
+  background: rgba(85, 96, 112, 0.15);
+  border: 1px solid var(--border);
 }
 
 .host-ip, .host-mac {

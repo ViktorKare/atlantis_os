@@ -5382,15 +5382,14 @@ function renderHostList() {
   }
   grid.innerHTML = hosts.map(h => {
     const st = hostStatus[h.id] || { online: false, ollamaRunning: false, modelCount: 0 };
-    const dotClass = st.ollamaRunning ? 'host-dot-green' : st.online ? 'host-dot-yellow' : 'host-dot-gray';
-    const dotTitle = st.ollamaRunning ? `Online — Ollama running (${st.modelCount} models)`
-                    : st.online        ? 'Online — Ollama not detected'
-                    : 'Offline';
-    return `<div class="host-card" data-id="${h.id}">
+    const dotClass    = st.ollamaRunning ? 'host-dot-green' : st.online ? 'host-dot-yellow' : 'host-dot-gray';
+    const statusCls   = st.ollamaRunning ? 'up' : st.online ? 'down' : 'offline';
+    const statusLabel = st.ollamaRunning ? `Ollama up · ${st.modelCount}` : st.online ? 'Ollama down' : 'Offline';
+    return `<div class="host-card host-card-${statusCls}" data-id="${h.id}">
       <div class="host-card-top">
-        <span class="host-dot ${dotClass}" title="${escHtml(dotTitle)}"></span>
+        <span class="host-dot ${dotClass}"></span>
         <span class="host-name">${escHtml(h.name)}</span>
-        ${st.ollamaRunning ? `<span class="host-model-count">${st.modelCount} models</span>` : ''}
+        <span class="host-pill host-pill-${statusCls}">${escHtml(statusLabel)}</span>
       </div>
       <div class="host-ip">${escHtml(h.ip)}:${h.ollamaPort}</div>
       <div class="host-mac">${h.mac ? escHtml(h.mac) : 'No MAC saved'}</div>
