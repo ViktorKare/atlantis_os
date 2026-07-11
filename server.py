@@ -274,6 +274,29 @@ def check_host_status(ip, port):
     ollama_running, model_count = check_ollama(ip, port) if online else (False, 0)
     return {'online': online, 'ollamaRunning': ollama_running, 'modelCount': model_count}
 
+def check_ssh_access(ip, ssh_user):
+    """Real key-based auth check, not just a port-22 probe. BatchMode=yes
+    makes ssh fail immediately instead of prompting for a password when key
+    auth isn't set up. StrictHostKeyChecking=accept-new is a deliberate
+    trust-on-first-use tradeoff for hosts on the user's own LAN — without
+    it, a host never SSH'd to before would report "failed" purely because
+    its key isn't in known_hosts yet, not because access is actually
+    broken. The outer timeout=5 is a backstop in case ssh hangs despite
+    ConnectTimeout, same defensive pattern as ping_host."""
+    try:
+        result = subprocess.run(
+            ['ssh', '-o', 'BatchMode=yes',
+             '-o', 'StrictHostKeyChecking=accept-new',
+             '-o', 'ConnectTimeout=2',
+             f'{ssh_user}@{ip}', 'echo', 'ok'],
+            capture_output=True, timeout=5, text=True
+        )
+        if result.returncode == 0:
+            return True, None
+        return False, (result.stderr or result.stdout or 'ssh exited non-zero').strip()[:300]
+    except Exception as e:
+        return False, str(e)
+
 def send_wol_packet(mac):
     mac_bytes = bytes.fromhex(mac.replace(':', '').replace('-', ''))
     if len(mac_bytes) != 6:
@@ -518,6 +541,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p == '/api/hosts/check':       self._check_hosts()
         elif p.startswith('/api/hosts/') and p.endswith('/wake'):
             self._wake_host(p.split('/')[3])
+        elif p.startswith('/api/hosts/') and p.endswith('/check-ssh'):
+            self._check_ssh(p.split('/')[3])
         elif p == '/api/threads':           self._post_thread(body)
         elif p.startswith('/api/threads/') and p.endswith('/messages'):
             self._post_messages(p.split('/')[3], body)
@@ -784,6 +809,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             return self._json({'ok': False, 'error': str(e)}, 400)
         self._json({'ok': True})
+
+    def _check_ssh(self, id):
+        with get_db() as db:
+            row = db.execute('SELECT ip, ssh_user FROM network_hosts WHERE id=?', (id,)).fetchone()
+        if not row:
+            return self.send_error(404)
+        ok, error = check_ssh_access(row['ip'], row['ssh_user'])
+        self._json({'ok': ok, 'error': error})
 
     # ── Threads ─────────────────────────────────────────────────────────────
 
