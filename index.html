@@ -92,7 +92,67 @@
 
     <!-- ── Home ─────────────────────────────────────────────── -->
     <div id="section-home" class="section active">
-      <iframe id="home-frame" src="http://192.168.1.240/" title="Home"></iframe>
+      <div id="home-backdrop"></div>
+      <main id="home-main">
+        <div id="home-inner">
+
+          <div id="home-greeting-row">
+            <div id="home-greeting-mark">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M12 2 L13.8 9.6 21.5 8 15.2 12.5 20 18.5 12.9 15.8 12 23 11.1 15.8 4 18.5 8.8 12.5 2.5 8 10.2 9.6 Z" fill="url(#home-greeting-grad)"/>
+                <defs><linearGradient id="home-greeting-grad" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stop-color="#f5b544"/><stop offset="100%" stop-color="#cc7e0a"/>
+                </linearGradient></defs>
+              </svg>
+            </div>
+            <h1 id="home-greeting"></h1>
+          </div>
+
+          <div>
+            <div id="home-compose-card">
+              <textarea id="home-input" placeholder="Ask anything, or start a chat…" rows="1"></textarea>
+              <div id="home-compose-toolbar">
+                <select id="home-agent-select"><option value="">No agent</option></select>
+                <select id="home-model-select"></select>
+                <div id="home-compose-spacer"></div>
+                <button id="home-send-btn" title="Send">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <p class="block-label">Ideas for you</p>
+            <div id="home-ideas">
+              <button class="idea-chip" data-prompt="Summarize a document">
+                <span class="idea-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span>
+                Summarize a document
+              </button>
+              <button class="idea-chip" data-prompt="Help me debug something">
+                <span class="idea-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg></span>
+                Help me debug something
+              </button>
+              <button class="idea-chip" data-prompt="Ask about my codebase">
+                <span class="idea-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.46 2.5 2.5 0 0 1-1.98-3 2.5 2.5 0 0 1-1.32-4.24 3 3 0 0 1 .34-5.58 2.5 2.5 0 0 1 1.96-4.22A2.5 2.5 0 0 1 9.5 2Z"/></svg></span>
+                Ask about my codebase
+                <span class="idea-source">Atlantis</span>
+              </button>
+              <button class="idea-chip" data-prompt="What's my worker/pipeline status?">
+                <span class="idea-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="9" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/><rect x="17" y="9" width="6" height="6" rx="1"/><line x1="7" y1="12" x2="9" y2="12"/><line x1="15" y1="12" x2="17" y2="12"/></svg></span>
+                What's my worker/pipeline status?
+                <span class="idea-source">Atlantis</span>
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <p class="block-label">Recent</p>
+            <div id="home-recent"></div>
+          </div>
+
+        </div>
+      </main>
     </div>
 
     <!-- ── Chat ─────────────────────────────────────────────── -->
