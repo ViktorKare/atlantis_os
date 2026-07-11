@@ -5040,6 +5040,9 @@ let hosts = [];
 let hostStatus = {};
 let hostsPollTimer = null;
 let hostsEditingId = null;
+let sshCheckStatus = {};
+const HOST_OS_LABELS  = { macos: 'macOS', linux: 'Linux', windows: 'Windows' };
+const HOST_GPU_LABELS = { nvidia: 'NVIDIA', apple_silicon: 'Apple Silicon', amd: 'AMD', cpu_only: 'CPU only' };
 
 function initModels() {
   if (!modelsUI.inited) {
@@ -5355,6 +5358,7 @@ function stopHostsPolling() {
 }
 
 async function checkAllHosts() {
+  sshCheckStatus = {};
   try { hostStatus = await api('POST', '/api/hosts/check'); }
   catch (_) { /* keep last known status */ }
 }
@@ -5385,6 +5389,13 @@ function renderHostList() {
     const dotClass    = st.ollamaRunning ? 'host-dot-green' : st.online ? 'host-dot-yellow' : 'host-dot-gray';
     const statusCls   = st.ollamaRunning ? 'up' : st.online ? 'down' : 'offline';
     const statusLabel = st.ollamaRunning ? `Ollama up · ${st.modelCount}` : st.online ? 'Ollama down' : 'Offline';
+    const osLabel  = h.os      ? HOST_OS_LABELS[h.os]   : 'Unknown';
+    const gpuLabel = h.gpuArch ? HOST_GPU_LABELS[h.gpuArch] : 'Unknown';
+    const ssh = sshCheckStatus[h.id];
+    const sshPending = !!(ssh && ssh.pending);
+    const sshPill = (ssh && !ssh.pending)
+      ? `<span class="host-pill ${ssh.ok ? 'host-pill-up' : 'host-pill-fail'}">${ssh.ok ? 'SSH OK' : 'SSH failed'}</span>`
+      : '';
     return `<div class="host-card host-card-${statusCls}" data-id="${h.id}">
       <div class="host-card-top">
         <span class="host-dot ${dotClass}"></span>
@@ -5393,10 +5404,13 @@ function renderHostList() {
       </div>
       <div class="host-ip">${escHtml(h.ip)}:${h.ollamaPort}</div>
       <div class="host-mac">${h.mac ? escHtml(h.mac) : 'No MAC saved'}</div>
+      <div class="host-os-gpu">${osLabel} · ${gpuLabel}</div>
       <div class="host-actions">
         <button class="btn-sm host-prio-up" title="Higher priority">↑</button>
         <button class="btn-sm host-prio-down" title="Lower priority">↓</button>
         <button class="btn-sm host-wake-btn" ${(st.online || !h.mac) ? 'disabled' : ''}>Wake</button>
+        <button class="btn-sm host-ssh-btn" ${sshPending ? 'disabled' : ''}>${sshPending ? 'Checking…' : 'Check SSH'}</button>
+        ${sshPill}
         <button class="btn-sm host-edit-btn">Edit</button>
         <button class="btn-sm host-delete-btn">Delete</button>
       </div>
@@ -5409,6 +5423,8 @@ function renderHostList() {
     b.addEventListener('click', e => moveHostPriority(e.target.closest('.host-card').dataset.id, 1)));
   grid.querySelectorAll('.host-wake-btn').forEach(b =>
     b.addEventListener('click', e => wakeHost(e.target.closest('.host-card').dataset.id)));
+  grid.querySelectorAll('.host-ssh-btn').forEach(b =>
+    b.addEventListener('click', e => checkSsh(e.target.closest('.host-card').dataset.id)));
   grid.querySelectorAll('.host-edit-btn').forEach(b =>
     b.addEventListener('click', e => openHostForm(e.target.closest('.host-card').dataset.id)));
   grid.querySelectorAll('.host-delete-btn').forEach(b =>
@@ -5474,6 +5490,18 @@ async function deleteHost(id) {
 async function wakeHost(id) {
   try { await api('POST', `/api/hosts/${id}/wake`); }
   catch (e) { alert('Wake failed: ' + e.message); }
+}
+
+async function checkSsh(id) {
+  sshCheckStatus[id] = { pending: true };
+  renderHostList();
+  try {
+    const res = await api('POST', `/api/hosts/${id}/check-ssh`);
+    sshCheckStatus[id] = { ok: res.ok, ts: Date.now() };
+  } catch (e) {
+    sshCheckStatus[id] = { ok: false, ts: Date.now() };
+  }
+  renderHostList();
 }
 
 init();

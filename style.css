@@ -3990,8 +3990,13 @@ button:not(:disabled):active {
   background: rgba(85, 96, 112, 0.15);
   border: 1px solid var(--border);
 }
+.host-pill-fail {
+  color: var(--danger);
+  background: rgba(224, 92, 107, 0.12);
+  border: 1px solid rgba(224, 92, 107, 0.35);
+}
 
-.host-ip, .host-mac {
+.host-ip, .host-mac, .host-os-gpu {
   font-size: 12px;
   color: var(--text-dim);
   margin-bottom: 2px;
