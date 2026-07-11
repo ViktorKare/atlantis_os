@@ -3,7 +3,7 @@
 Ollama UI — local server + SQLite persistence + task scheduler.
 Run with: python3 server.py
 """
-import json, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib
+import json, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib, concurrent.futures
 from pathlib import Path
 
 PORT           = 5000
@@ -247,6 +247,27 @@ def regenerate_ollama_endpoint_setting(db):
     db.execute('INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)',
                ('endpoint', json.dumps(','.join(candidates))))
 
+def ping_host(ip):
+    try:
+        result = subprocess.run(['ping', '-c', '1', ip],
+                                 capture_output=True, timeout=1.5)
+        return result.returncode == 0
+    except Exception:
+        return False
+
+def check_ollama(ip, port):
+    try:
+        with urllib.request.urlopen(f'http://{ip}:{port}/api/tags', timeout=1.5) as resp:
+            data = json.loads(resp.read())
+            return True, len(data.get('models', []))
+    except Exception:
+        return False, 0
+
+def check_host_status(ip, port):
+    online = ping_host(ip)
+    ollama_running, model_count = check_ollama(ip, port) if online else (False, 0)
+    return {'online': online, 'ollamaRunning': ollama_running, 'modelCount': model_count}
+
 # ── Schedule logic ─────────────────────────────────────────────────────────────
 
 def is_due(schedule: dict, now: datetime.datetime, last_run: datetime.datetime | None) -> bool:
@@ -476,6 +497,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p == '/api/agents':            self._post_agent(body)
         elif p == '/api/hosts':             self._post_host(body)
         elif p == '/api/hosts/reorder':     self._reorder_hosts(body)
+        elif p == '/api/hosts/check':       self._check_hosts()
         elif p == '/api/threads':           self._post_thread(body)
         elif p.startswith('/api/threads/') and p.endswith('/messages'):
             self._post_messages(p.split('/')[3], body)
@@ -702,6 +724,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 db.execute('UPDATE network_hosts SET priority=? WHERE id=?', (i, hid))
             regenerate_ollama_endpoint_setting(db)
         self._json({'ok': True})
+
+    def _check_hosts(self):
+        with get_db() as db:
+            rows = rows_to_list(db.execute(
+                'SELECT id, ip, ollama_port FROM network_hosts'
+            ).fetchall())
+        results = {}
+        if rows:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(rows)) as pool:
+                futures = {pool.submit(check_host_status, r['ip'], r['ollama_port']): r['id']
+                           for r in rows}
+                for fut in concurrent.futures.as_completed(futures):
+                    results[futures[fut]] = fut.result()
+        self._json(results)
 
     # ── Threads ─────────────────────────────────────────────────────────────
 
