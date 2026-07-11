@@ -39,7 +39,7 @@ let state    = { threads: [], activeId: null, model: '', selectedAgentId: null }
 let models   = [];
 let agents   = [];
 let tasks    = [];
-let settings = { endpoint: OLLAMA, showTokenStats: true, showThinking: true, timeoutHours: 5, pipelineManagerModel: '', pipelineMaxRetries: 3, brainPrePrompt: '', agentPrePrompt: '', chatPrePrompt: '', codeServerUrl: 'http://localhost:5001' };
+let settings = { endpoint: OLLAMA, showTokenStats: true, showThinking: true, timeoutHours: 5, pipelineManagerModel: '', pipelineMaxRetries: 3, brainPrePrompt: '', agentPrePrompt: '', chatPrePrompt: '', codeServerUrl: 'http://localhost:5001', defaultAgentId: '' };
 
 let abortController = null;
 let isGenerating    = false;
@@ -147,6 +147,13 @@ function initSettingsForm() {
   if (chatPP)  chatPP.value  = settings.chatPrePrompt  ?? '';
   const csUrl = document.getElementById('setting-code-server-url');
   if (csUrl) csUrl.value = settings.codeServerUrl ?? 'http://localhost:5001';
+
+  const defAgentSel = document.getElementById('setting-default-agent');
+  if (defAgentSel) {
+    defAgentSel.innerHTML = '<option value="">No agent</option>' +
+      agents.map(a => `<option value="${a.id}">${escHtml(a.name)}</option>`).join('');
+    defAgentSel.value = settings.defaultAgentId || '';
+  }
 }
 
 document.getElementById('save-settings-btn').addEventListener('click', () => {
@@ -162,6 +169,7 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
   settings.anthropicApiKey       = document.getElementById('setting-anthropic-key')?.value  ?? '';
   settings.openaiApiKey          = document.getElementById('setting-openai-key')?.value     ?? '';
   settings.codeServerUrl         = document.getElementById('setting-code-server-url')?.value.trim() || 'http://localhost:5001';
+  settings.defaultAgentId        = document.getElementById('setting-default-agent')?.value || '';
   const btn = document.getElementById('save-settings-btn');
   btn.disabled = true;
   saveSettings()
