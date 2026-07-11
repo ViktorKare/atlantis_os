@@ -1,0 +1,16 @@
+use_default_settings: true
+
+server:
+  port: 5002
+  bind_address: "127.0.0.1"
+  secret_key: "atlantis-searxng-local"
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  formats:
+    - html
+    - json
+
+ui:
+  static_use_hash: true

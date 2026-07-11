@@ -1,0 +1,15 @@
+[Unit]
+Description=Atlantis OS — Job Worker
+After=atlantis-server.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/viktor/library/projects/main
+ExecStart=/usr/bin/python3 /home/viktor/library/projects/main/worker.py
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

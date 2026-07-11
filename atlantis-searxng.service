@@ -1,0 +1,16 @@
+[Unit]
+Description=Atlantis OS — SearXNG Search
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/viktor/library/projects/main
+ExecStart=/home/viktor/.venvs/searxng/bin/python -m searx.webapp
+Environment=SEARXNG_SETTINGS_PATH=/home/viktor/library/projects/main/searxng-settings.yml
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
