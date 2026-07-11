@@ -2052,7 +2052,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     # ── Models (Ollama library) ──────────────────────────────────────────────
 
-    def _models_endpoint(self):
+    def _models_endpoint(self, host_id=None):
+        if host_id:
+            with get_db() as db:
+                row = db.execute(
+                    'SELECT ip, ollama_port FROM network_hosts WHERE id=?', (host_id,)
+                ).fetchone()
+            if row:
+                return f"http://{row['ip']}:{row['ollama_port']}"
         raw = None
         try:
             with get_db() as db:
@@ -2066,8 +2073,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return resolve_ollama_endpoint(raw)
 
     def _models_local(self):
+        qs = self.path.split('?', 1)[-1] if '?' in self.path else ''
+        host_id = urllib.parse.parse_qs(qs).get('host_id', [''])[0].strip()
         try:
-            with urllib.request.urlopen(f'{self._models_endpoint()}/api/tags', timeout=10) as resp:
+            with urllib.request.urlopen(f'{self._models_endpoint(host_id)}/api/tags', timeout=10) as resp:
                 self._json(json.loads(resp.read()))
         except Exception as e:
             self._json({'models': [], 'error': str(e)}, 502)
@@ -2172,6 +2181,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _models_pull(self, body):
         name = (body.get('name') or '').strip()
+        host_id = (body.get('hostId') or '').strip()
         if not name:
             return self.send_error(400)
         self.send_response(200)
@@ -2181,7 +2191,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         try:
             req = urllib.request.Request(
-                f'{self._models_endpoint()}/api/pull',
+                f'{self._models_endpoint(host_id)}/api/pull',
                 data=json.dumps({'model': name, 'stream': True}).encode(),
                 headers={'Content-Type': 'application/json'})
             with urllib.request.urlopen(req, timeout=3600) as resp:
@@ -2199,12 +2209,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _models_delete(self):
         qs = self.path.split('?', 1)[-1] if '?' in self.path else ''
-        name = urllib.parse.parse_qs(qs).get('name', [''])[0].strip()
+        params = urllib.parse.parse_qs(qs)
+        name = params.get('name', [''])[0].strip()
+        host_id = params.get('host_id', [''])[0].strip()
         if not name:
             return self.send_error(400)
         try:
             req = urllib.request.Request(
-                f'{self._models_endpoint()}/api/delete',
+                f'{self._models_endpoint(host_id)}/api/delete',
                 data=json.dumps({'model': name}).encode(),
                 headers={'Content-Type': 'application/json'}, method='DELETE')
             with urllib.request.urlopen(req, timeout=30):
