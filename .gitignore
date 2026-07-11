@@ -7,3 +7,4 @@ __pycache__/
 *.db-shm
 graphify-out/
 .claude/settings.local.json
+.worktrees/
