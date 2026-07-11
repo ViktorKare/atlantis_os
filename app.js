@@ -772,9 +772,17 @@ function activeThread() {
 }
 
 async function createThread() {
-  const t = { id: uid(), name: 'New chat', model: state.model, agentId: null, systemPrompt: '', messages: [] };
+  const agentId = settings.defaultAgentId || null;
+  const agent   = agentId ? agents.find(a => a.id === agentId) : null;
+  const model   = agent ? agent.model : state.model;
+  const t = { id: uid(), name: 'New chat', model, agentId, systemPrompt: '', messages: [] };
   state.threads.unshift(t);
-  state.activeId = t.id;
+  state.activeId        = t.id;
+  state.selectedAgentId = agentId;
+  state.model           = model;
+  agentSelect.value     = agentId || '';
+  modelSelect.value     = model;
+  systemPrompt.value    = '';
   await api('POST', '/api/threads', t).catch(() => {});
   renderSidebar();
   renderChat();
