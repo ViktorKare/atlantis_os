@@ -211,21 +211,20 @@ def init_db():
 
         # Seed default hosts on first run — matches the legacy
         # DEFAULT_OLLAMA_ENDPOINT fallback order (205 -> 251 -> 240).
-        with get_db() as db:
-            count = db.execute('SELECT COUNT(*) c FROM network_hosts').fetchone()['c']
-            if count == 0:
-                now = datetime.datetime.now().isoformat()
-                seeds = [
-                    ('host-205', 'Host .205',       '192.168.1.205', 1),
-                    ('host-251', 'Host .251',       '192.168.1.251', 2),
-                    ('host-240', 'Atlantis / self', '192.168.1.240', 3),
-                ]
-                for hid, name, ip, priority in seeds:
-                    db.execute(
-                        'INSERT INTO network_hosts (id,name,ip,mac,ollama_port,priority,enabled,created_at) '
-                        'VALUES (?,?,?,?,?,?,?,?)',
-                        (hid, name, ip, None, 11434, priority, 1, now)
-                    )
+        count = db.execute('SELECT COUNT(*) c FROM network_hosts').fetchone()['c']
+        if count == 0:
+            now = datetime.datetime.now().isoformat()
+            seeds = [
+                ('host-205', 'Host .205',       '192.168.1.205', 1),
+                ('host-251', 'Host .251',       '192.168.1.251', 2),
+                ('host-240', 'Atlantis / self', '192.168.1.240', 3),
+            ]
+            for hid, name, ip, priority in seeds:
+                db.execute(
+                    'INSERT INTO network_hosts (id,name,ip,mac,ollama_port,priority,enabled,created_at) '
+                    'VALUES (?,?,?,?,?,?,?,?)',
+                    (hid, name, ip, None, 11434, priority, 1, now)
+                )
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
