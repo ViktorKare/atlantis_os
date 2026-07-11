@@ -3,7 +3,7 @@
 Ollama UI — local server + SQLite persistence + task scheduler.
 Run with: python3 server.py
 """
-import json, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib, concurrent.futures
+import json, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib, concurrent.futures, socket
 from pathlib import Path
 
 PORT           = 5000
@@ -268,6 +268,18 @@ def check_host_status(ip, port):
     ollama_running, model_count = check_ollama(ip, port) if online else (False, 0)
     return {'online': online, 'ollamaRunning': ollama_running, 'modelCount': model_count}
 
+def send_wol_packet(mac):
+    mac_bytes = bytes.fromhex(mac.replace(':', '').replace('-', ''))
+    if len(mac_bytes) != 6:
+        raise ValueError('MAC address must be 6 bytes')
+    packet = b'\xff' * 6 + mac_bytes * 16
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    try:
+        sock.sendto(packet, ('255.255.255.255', 9))
+    finally:
+        sock.close()
+
 # ── Schedule logic ─────────────────────────────────────────────────────────────
 
 def is_due(schedule: dict, now: datetime.datetime, last_run: datetime.datetime | None) -> bool:
@@ -498,6 +510,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p == '/api/hosts':             self._post_host(body)
         elif p == '/api/hosts/reorder':     self._reorder_hosts(body)
         elif p == '/api/hosts/check':       self._check_hosts()
+        elif p.startswith('/api/hosts/') and p.endswith('/wake'):
+            self._wake_host(p.split('/')[3])
         elif p == '/api/threads':           self._post_thread(body)
         elif p.startswith('/api/threads/') and p.endswith('/messages'):
             self._post_messages(p.split('/')[3], body)
@@ -738,6 +752,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 for fut in concurrent.futures.as_completed(futures):
                     results[futures[fut]] = fut.result()
         self._json(results)
+
+    def _wake_host(self, id):
+        with get_db() as db:
+            row = db.execute('SELECT mac FROM network_hosts WHERE id=?', (id,)).fetchone()
+        if not row or not row['mac']:
+            return self._json({'ok': False, 'error': 'No MAC address saved for this host'}, 400)
+        try:
+            send_wol_packet(row['mac'])
+        except Exception as e:
+            return self._json({'ok': False, 'error': str(e)}, 400)
+        self._json({'ok': True})
 
     # ── Threads ─────────────────────────────────────────────────────────────
 
