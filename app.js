@@ -409,7 +409,7 @@ function initHome() {
   homeAgentSelect.innerHTML = '<option value="">No agent</option>' +
     agents.map(a => `<option value="${a.id}">${escHtml(a.name)}</option>`).join('');
   const defAgent = settings.defaultAgentId ? agents.find(a => a.id === settings.defaultAgentId) : null;
-  homeAgentSelect.value = settings.defaultAgentId || '';
+  homeAgentSelect.value = defAgent ? defAgent.id : '';
 
   homeModelSelect.innerHTML = modelSelect.innerHTML;
   homeModelSelect.value = defAgent ? defAgent.model : state.model;
