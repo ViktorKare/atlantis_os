@@ -2151,6 +2151,20 @@ button { font-family: inherit; }
     radial-gradient(ellipse 50% 40% at 60% 15%, rgba(45,217,232,.07), transparent 65%),
     radial-gradient(circle, #2a3f66 1.6px, transparent 1.6px);
   background-size: 100% 100%, 100% 100%, 100% 100%, 30px 30px;
+  background-position: 0 0, 0 0, 0 0, 0 0;
+}
+
+/* Slow ambient drift: horizon streak flows sideways, dot-grid floor flows
+   toward camera. Off by default; only runs when motion is welcome. */
+@media (prefers-reduced-motion: no-preference) {
+  #pipe-canvas-wrap::before { animation: pipe-horizon-drift 22s linear infinite; }
+  #pipe-canvas-wrap::after  { animation: pipe-floor-drift 40s linear infinite; }
+}
+@keyframes pipe-horizon-drift {
+  to { background-position: 100% bottom, 0 0, 0 0, 0 0, 0 0, 0 0; }
+}
+@keyframes pipe-floor-drift {
+  to { background-position: 0 0, 0 0, 0 0, -60px -60px; }
 }
 #pipe-canvas {
   position: absolute;
