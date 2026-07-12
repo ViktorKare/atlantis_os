@@ -31,12 +31,23 @@ Both started as systemd user services via `bash setup-services.sh`.
 ### Sections
 
   **Home** (default on load)
-  - Split layout: iframe (http://192.168.1.240/) on the left, dashboard panel on right
-  - Dashboard panel:
-      • Stats row: agent count, task count, thread count
-      • Recent activity: task runs from the last 7 days (from /api/activity)
-      • AI suggestions: model selector + "Generate" button streams an Ollama
-        response using system context (agents, tasks, recent runs) as prompt
+  - Greeting + single compose card; landing state collapses to just greeting +
+    compose + side panel, expanding into a chat view (`.home-active`) once a
+    message is sent
+  - Two modes, toggled via "⚡ Brain" button (`homeMode`, `'chat' | 'brain'`):
+      • Chat mode: agent + model dropdowns, sending creates/switches a normal
+        thread and hands off to the Chat section (`switchSection('chat')`)
+      • Brain mode: agent dropdown hidden, animated gradient border on the
+        compose card, sends into the persistent `__brain__` thread in place
+        (stays on Home) via System Brain (see below); "Clear history" empties
+        `__brain__` and returns Home to landing state
+      • `@brain`/`/brain` prefix sends a one-off Brain-mode message from Chat
+        mode without flipping the persisted toggle
+  - System Brain: system prompt auto-built each send from live system context
+    (agents, tasks, DB counts — `buildBrainSystemPrompt()`) so answers stay
+    grounded in real agent/task/file names rather than drifting generic
+  - Side panel: "Recent" (last 3 non-brain threads, click → Chat) and "Recent
+    Pipeline Runs" (`GET /api/pipeline-runs/recent`, click → Pipelines)
 
   **Chat**
   - Thread list sidebar: create, switch, delete threads
@@ -96,19 +107,17 @@ Both started as systemd user services via `bash setup-services.sh`.
   - Cancel: ◼ Stop button POSTs /api/jobs/:id/cancel; worker checks between
     steps and flips the run to cancelled
 
-  **Debug**
-  - Status bar: worker process state (PID, restarts, DB size)
-  - Job list panel: recent jobs with status, duration, pipeline name
-  - Event log panel: full SSE event stream for selected job (step starts,
-    chunks, tool calls, retries, loop events, PM verdicts, done/fail)
-  - Live think panel (right column, #dbg-think-panel): mirrors live token
-    output for the active step; handover banners show which agent handed
-    off to which; PM verdicts, tool calls, loop events shown inline
-
-  **Brain** (system assistant)
-  - Persistent chat session (thread `__brain__`)
-  - System prompt auto-built from full API docs + DB schema + live data
-  - Right panel: API reference + live DB counts
+  **Debug** (job/worker monitor + system reference — the monitor promoted out
+  of Pipelines, the reference panel absorbed from the now-removed standalone
+  Brain section)
+  - Left/main (`#pipe-debug-area`): status bar with worker process state
+    (online/offline dot, PID/restart info via `#dbg-worker-info`, ↺ Restart
+    worker button) + jobs panel (recent jobs list, status/duration/pipeline
+    name) + log panel (click a job to view its full NDJSON output log)
+  - Right (`#brain-panel`, "Reference"): API endpoint list grouped by area +
+    live DB counts, fetched from `/api/brain/status`; ⟳ refresh button
+    — this is the reference panel formerly hosted in the standalone Brain
+    section, now living alongside the job monitor instead
 
   **Models**
   - Two-panel: installed models sidebar (name, params, quant, size, ✕ delete)
@@ -263,6 +272,8 @@ Both started as systemd user services via `bash setup-services.sh`.
   GET  /api/pipelines/:id/runs    run history
 
   GET  /api/pipeline-runs/:id     run + step_runs detail
+  GET  /api/pipeline-runs/recent  last 10 runs across all pipelines, with
+                                  pipelineName joined in (Home widget)
 
   GET  /api/jobs                  job list (optional ?pipeline_id=)
   GET  /api/jobs/:id              job status
@@ -362,8 +373,12 @@ Both started as systemd user services via `bash setup-services.sh`.
   ✓ 7.  Schedule backend — server.py scheduler reads/writes SQLite
   ✓ 8.  SQLite persistence — all data in data.db, localStorage eliminated
   ✓ 9.  Plans section — file-based .md, AI edits plan, execute plan → tasks
-  ✓ 10. Home dashboard — split iframe + system report panel
-  ✓ 11. Brain tab — persistent system-context chat + live API/DB reference panel
+  ✓ 10. Home dashboard — split iframe + system report panel; later replaced by
+        the greeting/compose/chat layout with dual Chat/Brain modes (see 11)
+  ✓ 11. Brain tab — persistent system-context chat + live API/DB reference panel;
+        later folded into Home as a toggleable mode (chat sends into `__brain__`
+        in place, no separate section) with the reference panel moved into
+        Debug alongside the promoted job/worker monitor
   ✓ 12. Pipeline canvas — drag-and-drop nodes, zoom/pan, step config panel
   ✓ 13. Pipeline execution engine — agentic tool loop, PM review, retries, pause-on-fail
   ✓ 14. Worker daemon (worker.py) — background job execution, decoupled from HTTP thread

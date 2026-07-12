@@ -1500,10 +1500,6 @@ body::before {
 
 /* ── Brain ───────────────────────────────────────────────── */
 
-#section-brain {
-  overflow: hidden;
-}
-
 #brain-chat-area {
   flex: 1;
   min-width: 0;
