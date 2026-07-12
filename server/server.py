@@ -6,7 +6,6 @@ Run with: python3 server.py
 import json, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib, concurrent.futures, socket
 from pathlib import Path
 
-PORT           = 5000
 BASE_DIR       = Path(__file__).parent           # server/
 ROOT_DIR       = BASE_DIR.parent                  # repo root
 WEB_DIR        = ROOT_DIR / 'web'
@@ -17,6 +16,21 @@ DB_FILE        = DATA_DIR / 'data.db'
 PLANS_DIR      = ROOT_DIR / 'plans'
 ZONE_DIR       = DATA_DIR / 'zone'
 PROJECTS_DIR   = ZONE_DIR / 'projects'
+
+CONFIG_FILE    = ROOT_DIR / 'atlantis.config.json'
+DEFAULT_CONFIG = {'port': 5000, 'root_path': str(Path.home())}
+
+def load_config():
+    if not CONFIG_FILE.exists():
+        return dict(DEFAULT_CONFIG)
+    try:
+        cfg = json.loads(CONFIG_FILE.read_text())
+        return {**DEFAULT_CONFIG, **cfg}
+    except (json.JSONDecodeError, OSError):
+        return dict(DEFAULT_CONFIG)
+
+_config = load_config()
+PORT    = _config['port']
 
 DEFAULT_OLLAMA_ENDPOINT = 'http://192.168.1.205:11434,http://192.168.1.251:11434,http://192.168.1.240:11434,http://localhost:11434'
 _ollama_host_cache = {'url': None, 'ts': 0.0}
@@ -187,6 +201,7 @@ def init_db():
                 created_at  TEXT
             );
         ''')
+        db.execute('UPDATE code_sessions SET root_path=? WHERE id=?', (_config['root_path'], 'default'))
         # Migrations for existing databases
         for sql in [
             'ALTER TABLE agents DROP COLUMN file_access',
