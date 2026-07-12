@@ -307,37 +307,44 @@ def probe_host_sysinfo(ip, ssh_user, os_, gpu_arch):
     {'ram_gb', 'vram_gb', 'live'}; live=False on any failure or when
     os is unsupported (windows, or NULL) — same BatchMode/StrictHostKeyChecking/
     ConnectTimeout flags as check_ssh_access, so a host that fails the
-    Hosts-tab SSH check will also correctly report live=False here."""
+    Hosts-tab SSH check will also correctly report live=False here.
+    RAM and VRAM are probed as two independent ssh calls on Linux+nvidia
+    hosts (rather than one semicolon-chained command) so a failed
+    nvidia-smi — missing binary, wrong GPU, driver issue — degrades to a
+    real RAM number with vram_gb=0 instead of discarding a successful RAM
+    read just because the last command in a shell chain failed."""
     if os_ == 'macos':
-        remote_cmd = 'sysctl -n hw.memsize'
+        ram_cmd = 'sysctl -n hw.memsize'
     elif os_ == 'linux':
-        remote_cmd = 'cat /proc/meminfo | grep MemTotal'
-        if gpu_arch == 'nvidia':
-            remote_cmd += '; nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits'
+        ram_cmd = 'cat /proc/meminfo | grep MemTotal'
     else:
         return {'ram_gb': 0.0, 'vram_gb': 0.0, 'live': False}
+    ssh_base = ['ssh', '-o', 'BatchMode=yes',
+                '-o', 'StrictHostKeyChecking=accept-new',
+                '-o', 'ConnectTimeout=2', f'{ssh_user}@{ip}']
     try:
-        result = subprocess.run(
-            ['ssh', '-o', 'BatchMode=yes',
-             '-o', 'StrictHostKeyChecking=accept-new',
-             '-o', 'ConnectTimeout=2',
-             f'{ssh_user}@{ip}', remote_cmd],
-            capture_output=True, timeout=6, text=True
-        )
+        result = subprocess.run(ssh_base + [ram_cmd], capture_output=True, timeout=6, text=True)
         if result.returncode != 0:
             return {'ram_gb': 0.0, 'vram_gb': 0.0, 'live': False}
-        lines = [l.strip() for l in result.stdout.strip().splitlines() if l.strip()]
-        if not lines:
+        line = result.stdout.strip()
+        if not line:
             return {'ram_gb': 0.0, 'vram_gb': 0.0, 'live': False}
-        ram_gb = vram_gb = 0.0
         if os_ == 'macos':
-            ram_gb = int(lines[0]) / 1e9
-            if gpu_arch == 'apple_silicon':
-                vram_gb = ram_gb
-        elif os_ == 'linux':
-            ram_gb = int(lines[0].split()[1]) * 1024 / 1e9
-            if gpu_arch == 'nvidia' and len(lines) > 1:
-                vram_gb = sum(float(x) for x in ' '.join(lines[1:]).split()) * 1024**2 / 1e9
+            ram_gb = int(line) / 1e9
+            vram_gb = ram_gb if gpu_arch == 'apple_silicon' else 0.0
+        else:
+            ram_gb = int(line.split()[1]) * 1024 / 1e9
+            vram_gb = 0.0
+            if gpu_arch == 'nvidia':
+                try:
+                    vram_result = subprocess.run(
+                        ssh_base + ['nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits'],
+                        capture_output=True, timeout=6, text=True
+                    )
+                    if vram_result.returncode == 0 and vram_result.stdout.strip():
+                        vram_gb = sum(float(x) for x in vram_result.stdout.split()) * 1024**2 / 1e9
+                except Exception:
+                    pass
         return {'ram_gb': round(ram_gb, 1), 'vram_gb': round(vram_gb, 1), 'live': True}
     except Exception:
         return {'ram_gb': 0.0, 'vram_gb': 0.0, 'live': False}
@@ -2068,22 +2075,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                if 'html' in ct else raw.decode('utf-8', errors='replace')
         return text[:50000], None
 
+    def _under_workspace(self, resolved, work_root):
+        """True when resolved is work_root itself or a descendant of it, comparing
+        real (symlink-followed) paths so a workspace that is itself a symlink
+        (e.g. mounted-drive workspaces) still matches its own contents."""
+        try:
+            resolved.relative_to(Path(work_root).resolve())
+            return True
+        except ValueError:
+            return False
+
     def _pipe_path_safe(self, raw, work_root=None):
         """Resolve a path for pipeline tool use.
-        If the path is absolute but not under /home, treat it as relative to work_root."""
+        If the path is absolute but not under work_root, treat it as relative to work_root."""
         if work_root is None:
             work_root = str(self._fs_root())
         raw = str(raw).strip()
         p = Path(raw)
         if p.is_absolute():
             resolved = p.resolve()
-            if not str(resolved).startswith('/home'):
+            if not self._under_workspace(resolved, work_root):
                 # Model generated a wrong absolute path — strip leading / and anchor to work_root
                 resolved = (Path(work_root) / raw.lstrip('/')).resolve()
         else:
             resolved = (Path(work_root) / raw).resolve()
-        if not str(resolved).startswith('/home'):
-            raise PermissionError(f'Path outside /home is not allowed: {resolved}')
+        if not self._under_workspace(resolved, work_root):
+            raise PermissionError(f'Path outside workspace ({work_root}) is not allowed: {resolved}')
         return resolved
 
     def _tools_exec(self, body):
