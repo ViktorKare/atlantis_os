@@ -18,6 +18,9 @@ OLLAMA_BIN   = OLLAMA_DIR / 'bin' / 'ollama'
 _children = {}
 
 
+# Only checks PID existence, not process identity — a sufficiently rare
+# PID-reuse race could produce a false "already running." Accepted tradeoff:
+# a portable identity check isn't available in stdlib across all three OSes.
 def is_alive(pid):
     if sys.platform == 'win32':
         out = subprocess.run(['tasklist', '/FI', f'PID eq {pid}'], capture_output=True, text=True)
@@ -120,6 +123,10 @@ def run_supervisor():
         return
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(os.getpid()))
+    if STOP_FLAG.exists():
+        STOP_FLAG.unlink()
+    if RESTART_FLAG.exists():
+        RESTART_FLAG.unlink()
 
     def _on_term(signum, frame):
         raise KeyboardInterrupt
