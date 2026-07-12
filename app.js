@@ -4032,7 +4032,7 @@ function initBrainModelSelect() {
   const sel = document.getElementById('brain-model-select');
   if (!sel || !models.length) return;
   sel.innerHTML = models.map(m => `<option value="${escHtml(m)}">${escHtml(m)}</option>`).join('');
-  const preferred = settings.homeModel;
+  const preferred = state.model;
   if (preferred && models.includes(preferred)) sel.value = preferred;
 }
 
@@ -4114,7 +4114,7 @@ async function sendBrainMessage(overrideContent) {
     let looping = true;
     while (looping) {
       looping = false;
-      const body = { model, messages: apiMessages, stream: true };
+      const body = { model, messages: apiMessages, stream: true, options: { num_ctx: 8192 } };
       if (brainTools.length) body.tools = brainTools;
 
       const resp = await fetch(`${await resolveOllama()}/api/chat`, {
@@ -5071,15 +5071,14 @@ function initModels() {
     });
     document.getElementById('models-host-select').addEventListener('change', e => {
       modelsUI.hostId = e.target.value;
-      document.getElementById('models-hw-chips').style.display = modelsUI.hostId ? 'none' : '';
+      loadSysinfo(modelsUI.hostId);
       loadLocalModels();
     });
-    loadSysinfo();
     searchHub();
   }
   // Host selection always resets to Auto when the tab is (re-)activated.
   modelsUI.hostId = '';
-  document.getElementById('models-hw-chips').style.display = '';
+  loadSysinfo('');
   loadHosts().then(() => {
     const sel = document.getElementById('models-host-select');
     sel.innerHTML = '<option value="">Auto</option>' +
@@ -5089,15 +5088,27 @@ function initModels() {
   loadLocalModels();
 }
 
-async function loadSysinfo() {
-  try { modelsUI.sysinfo = await api('GET', '/api/models/sysinfo'); }
-  catch { modelsUI.sysinfo = null; }
+async function loadSysinfo(hostId = '') {
+  try {
+    const q = hostId ? `?host_id=${encodeURIComponent(hostId)}` : '';
+    modelsUI.sysinfo = await api('GET', `/api/models/sysinfo${q}`);
+  } catch { modelsUI.sysinfo = null; }
   const el = document.getElementById('models-hw-chips');
   const s = modelsUI.sysinfo;
-  el.innerHTML = s ? `
-    <span class="hw-chip" title="System memory">RAM ${s.ram_gb} GB</span>
-    <span class="hw-chip" title="GPU memory — models up to ~${usableVramGB(s).toFixed(1)} GB run fully on GPU; the rest is headroom for KV cache and compute buffers">VRAM ${s.vram_gb} GB</span>
-    <span class="hw-chip" title="Free disk space">Disk ${s.disk_free_gb} GB</span>` : '';
+  if (s && s.live) {
+    el.innerHTML = `
+      <span class="hw-chip" title="System memory">RAM ${s.ram_gb} GB</span>
+      <span class="hw-chip" title="GPU memory — models up to ~${usableVramGB(s).toFixed(1)} GB run fully on GPU; the rest is headroom for KV cache and compute buffers">VRAM ${s.vram_gb} GB</span>
+      ${s.disk_free_gb ? `<span class="hw-chip" title="Free disk space">Disk ${s.disk_free_gb} GB</span>` : ''}`;
+  } else if (s && (s.os || s.gpu_arch)) {
+    const osLabel  = s.os       ? HOST_OS_LABELS[s.os]       : 'Unknown';
+    const gpuLabel = s.gpu_arch ? HOST_GPU_LABELS[s.gpu_arch] : 'Unknown';
+    el.innerHTML = `<span class="hw-chip" title="Could not fetch live specs over SSH">${escHtml(osLabel)} · ${escHtml(gpuLabel)} — live specs unavailable</span>`;
+  } else if (s) {
+    el.innerHTML = `<span class="hw-chip">Specs unknown for this host</span>`;
+  } else {
+    el.innerHTML = '';
+  }
 }
 
 async function loadLocalModels() {
@@ -5153,7 +5164,7 @@ function usableVramGB(s) { return (s.vram_gb || 0) * 0.85; }
 
 function fitTier(gb) {
   const s = modelsUI.sysinfo;
-  if (modelsUI.hostId || gb == null || !s || !s.ram_gb) return null;
+  if (gb == null || !s || !s.ram_gb) return null;
   if (s.vram_gb && gb <= usableVramGB(s)) return { cls: 'fit-gpu', dot: '◉', label: 'GPU fit' };
   if (gb <= s.ram_gb * 0.65)              return { cls: 'fit-cpu', dot: '◎', label: 'CPU fit' };
   return { cls: 'fit-no', dot: '✕', label: 'Too large' };

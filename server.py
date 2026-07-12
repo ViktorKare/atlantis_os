@@ -297,6 +297,51 @@ def check_ssh_access(ip, ssh_user):
     except Exception as e:
         return False, str(e)
 
+def probe_host_sysinfo(ip, ssh_user, os_, gpu_arch):
+    """Remote equivalent of _models_sysinfo's local probe, run over SSH.
+    Mirrors the same sysctl/proc-meminfo/nvidia-smi commands but targets
+    a specific network host instead of the machine server.py runs on,
+    selecting commands by the host's stored os/gpu_arch fields (there's
+    no way to introspect a remote machine's platform without a command
+    round-trip first, so the DB fields are trusted). Returns
+    {'ram_gb', 'vram_gb', 'live'}; live=False on any failure or when
+    os is unsupported (windows, or NULL) — same BatchMode/StrictHostKeyChecking/
+    ConnectTimeout flags as check_ssh_access, so a host that fails the
+    Hosts-tab SSH check will also correctly report live=False here."""
+    if os_ == 'macos':
+        remote_cmd = 'sysctl -n hw.memsize'
+    elif os_ == 'linux':
+        remote_cmd = 'cat /proc/meminfo | grep MemTotal'
+        if gpu_arch == 'nvidia':
+            remote_cmd += '; nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits'
+    else:
+        return {'ram_gb': 0.0, 'vram_gb': 0.0, 'live': False}
+    try:
+        result = subprocess.run(
+            ['ssh', '-o', 'BatchMode=yes',
+             '-o', 'StrictHostKeyChecking=accept-new',
+             '-o', 'ConnectTimeout=2',
+             f'{ssh_user}@{ip}', remote_cmd],
+            capture_output=True, timeout=6, text=True
+        )
+        if result.returncode != 0:
+            return {'ram_gb': 0.0, 'vram_gb': 0.0, 'live': False}
+        lines = [l.strip() for l in result.stdout.strip().splitlines() if l.strip()]
+        if not lines:
+            return {'ram_gb': 0.0, 'vram_gb': 0.0, 'live': False}
+        ram_gb = vram_gb = 0.0
+        if os_ == 'macos':
+            ram_gb = int(lines[0]) / 1e9
+            if gpu_arch == 'apple_silicon':
+                vram_gb = ram_gb
+        elif os_ == 'linux':
+            ram_gb = int(lines[0].split()[1]) * 1024 / 1e9
+            if gpu_arch == 'nvidia' and len(lines) > 1:
+                vram_gb = sum(float(x) for x in ' '.join(lines[1:]).split()) * 1024**2 / 1e9
+        return {'ram_gb': round(ram_gb, 1), 'vram_gb': round(vram_gb, 1), 'live': True}
+    except Exception:
+        return {'ram_gb': 0.0, 'vram_gb': 0.0, 'live': False}
+
 def send_wol_packet(mac):
     mac_bytes = bytes.fromhex(mac.replace(':', '').replace('-', ''))
     if len(mac_bytes) != 6:
@@ -2136,6 +2181,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json({'models': [], 'error': str(e)}, 502)
 
     def _models_sysinfo(self):
+        qs = self.path.split('?', 1)[-1] if '?' in self.path else ''
+        host_id = urllib.parse.parse_qs(qs).get('host_id', [''])[0].strip()
+        if host_id:
+            with get_db() as db:
+                row = db.execute(
+                    'SELECT ip, ssh_user, os, gpu_arch FROM network_hosts WHERE id=?',
+                    (host_id,)
+                ).fetchone()
+            if not row:
+                return self._json({'ram_gb': 0.0, 'vram_gb': 0.0, 'disk_free_gb': 0.0,
+                                    'live': False, 'os': None, 'gpu_arch': None})
+            probe = probe_host_sysinfo(row['ip'], row['ssh_user'], row['os'], row['gpu_arch'])
+            return self._json({'ram_gb': probe['ram_gb'], 'vram_gb': probe['vram_gb'],
+                               'disk_free_gb': 0.0, 'live': probe['live'],
+                               'os': row['os'], 'gpu_arch': row['gpu_arch']})
         ram_gb = vram_gb = 0.0
         try:
             if sys.platform == 'darwin':
@@ -2166,7 +2226,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception:
             disk_free_gb = 0.0
         self._json({'ram_gb': round(ram_gb, 1), 'vram_gb': round(vram_gb, 1),
-                    'disk_free_gb': round(disk_free_gb, 1)})
+                    'disk_free_gb': round(disk_free_gb, 1), 'live': True,
+                    'os': None, 'gpu_arch': None})
 
     def _hub_fetch(self, url):
         req = urllib.request.Request(url, headers={
