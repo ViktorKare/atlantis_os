@@ -182,6 +182,16 @@ def git_churn_stat(work_root, cap=2000):
     stat = git_run(work_root, 'diff', '--cached', '--stat')
     return (stat or '').strip()[:cap]
 
+def _under_workspace(resolved, work_root):
+    """True when resolved is work_root itself or a descendant of it, comparing
+    real (symlink-followed) paths so a workspace that is itself a symlink
+    (e.g. mounted-drive workspaces) still matches its own contents."""
+    try:
+        resolved.relative_to(Path(work_root).resolve())
+        return True
+    except ValueError:
+        return False
+
 def pipe_path_safe(raw, work_root=None):
     if work_root is None:
         work_root = str(get_fs_root())
@@ -189,12 +199,12 @@ def pipe_path_safe(raw, work_root=None):
     p = Path(raw)
     if p.is_absolute():
         resolved = p.resolve()
-        if not str(resolved).startswith('/home'):
+        if not _under_workspace(resolved, work_root):
             resolved = (Path(work_root) / raw.lstrip('/')).resolve()
     else:
         resolved = (Path(work_root) / raw).resolve()
-    if not str(resolved).startswith('/home'):
-        raise PermissionError(f'Path outside /home is not allowed: {resolved}')
+    if not _under_workspace(resolved, work_root):
+        raise PermissionError(f'Path outside workspace ({work_root}) is not allowed: {resolved}')
     return resolved
 
 def _db_write_guard(p):
