@@ -3,6 +3,7 @@
 Ollama UI — local server + SQLite persistence + task scheduler.
 Run with: python3 server.py
 """
+from __future__ import annotations
 import json, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib, concurrent.futures, socket
 from pathlib import Path
 
