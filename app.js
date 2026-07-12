@@ -392,6 +392,37 @@ function homeGreetingText() {
   return `Good ${part}, Viktor`;
 }
 
+let homeMode = 'chat';  // 'chat' | 'brain'
+
+function initHomeBrainThread() {
+  if (brainThread) return;
+  brainThread = state.threads.find(t => t.name === '__brain__') || null;
+  if (!brainThread) {
+    const t = { id: uid(), name: '__brain__', model: '', agentId: null, systemPrompt: '', messages: [] };
+    state.threads.push(t);
+    brainThread = t;
+    api('POST', '/api/threads', t).catch(() => {});
+  }
+}
+
+function renderHomeLayout() {
+  const section = document.getElementById('section-home');
+  const hasBrainHistory = homeMode === 'brain' &&
+    !!brainThread?.messages.some(m => m.role !== 'system');
+  section.classList.toggle('home-active', hasBrainHistory);
+  document.getElementById('home-compose-card').classList.toggle('is-brain', homeMode === 'brain');
+  document.getElementById('home-agent-select').hidden   = homeMode === 'brain';
+  document.getElementById('home-brain-controls').hidden = homeMode !== 'brain';
+  document.getElementById('home-mode-toggle').classList.toggle('active', homeMode === 'brain');
+  if (hasBrainHistory) renderHomeChat();
+}
+
+function toggleHomeMode() {
+  homeMode = homeMode === 'chat' ? 'brain' : 'chat';
+  if (homeMode === 'brain') initHomeBrainThread();
+  renderHomeLayout();
+}
+
 function renderHomeRecent() {
   const recent = state.threads.filter(t => t.name !== '__brain__').slice(0, 3);
   homeRecent.innerHTML = recent.length
@@ -417,11 +448,23 @@ function initHome() {
   homeModelSelect.value = defAgent ? defAgent.model : state.model;
 
   renderHomeRecent();
+  renderHomeLayout();
 }
 
 async function sendFromHome() {
-  const text = homeInput.value.trim();
-  if (!text) return;
+  const raw = homeInput.value.trim();
+  if (!raw) return;
+
+  const brainPrefixMatch = raw.match(/^[@/]brain\b\s*/i);
+  const text = brainPrefixMatch ? raw.slice(brainPrefixMatch[0].length) : raw;
+
+  if ((homeMode === 'brain' || brainPrefixMatch) && text) {
+    homeInput.value = '';
+    homeInput.style.height = 'auto';
+    if (brainPrefixMatch) initHomeBrainThread();
+    await sendHomeBrainMessage(text);
+    return;
+  }
 
   const agentId = homeAgentSelect.value || null;
   const model   = homeModelSelect.value;
@@ -451,6 +494,25 @@ homeInput.addEventListener('input', () => {
   homeInput.style.height = 'auto';
   homeInput.style.height = Math.min(homeInput.scrollHeight, 160) + 'px';
 });
+
+document.getElementById('home-mode-toggle').addEventListener('click', toggleHomeMode);
+
+document.getElementById('home-clear-btn').addEventListener('click', async () => {
+  if (!brainThread || !confirm('Clear brain chat history?')) return;
+  brainThread.messages = [];
+  api('DELETE', `/api/threads/${brainThread.id}/messages`).catch(() => {});
+  document.getElementById('section-home').classList.remove('home-active');
+  renderHomeChat();
+});
+
+document.getElementById('home-auto-btn').addEventListener('click', () => {
+  brainAutoAccept = !brainAutoAccept;
+  const btn = document.getElementById('home-auto-btn');
+  btn.classList.toggle('active', brainAutoAccept);
+  btn.title = brainAutoAccept ? 'Auto-accept: ON — actions execute immediately' : 'Auto-accept actions (off)';
+});
+
+document.getElementById('home-abandon-btn').addEventListener('click', () => brainAbort?.abort());
 
 document.getElementById('new-agent-btn').addEventListener('click', createAgent);
 
@@ -1952,7 +2014,7 @@ function buildActionCard(action) {
         sendBtn.addEventListener('click', async () => {
           sendBtn.disabled = true;
           sendBtn.textContent = 'Sending…';
-          await sendBrainMessage(result.followUp);
+          await sendHomeBrainMessage(result.followUp);
           sendBtn.textContent = 'Sent ✓';
         });
       }
@@ -1996,7 +2058,7 @@ function buildActionCard(action) {
           sendBtn.addEventListener('click', async () => {
             sendBtn.disabled = true;
             sendBtn.textContent = 'Sending…';
-            await sendBrainMessage(result.followUp);
+            await sendHomeBrainMessage(result.followUp);
             sendBtn.textContent = 'Sent ✓';
           });
         }
@@ -3919,31 +3981,8 @@ Rules:
     : '');
 }
 
-async function initBrain() {
-  if (!brainThread) {
-    brainThread = state.threads.find(t => t.name === '__brain__') || null;
-    if (!brainThread) {
-      const t = { id: uid(), name: '__brain__', model: '', agentId: null, systemPrompt: '', messages: [] };
-      state.threads.push(t);
-      brainThread = t;
-      await api('POST', '/api/threads', t).catch(() => {});
-    }
-    initBrainModelSelect();
-  }
-  renderBrainChat();
-  loadBrainPanel();
-}
-
-function initBrainModelSelect() {
-  const sel = document.getElementById('brain-model-select');
-  if (!sel || !models.length) return;
-  sel.innerHTML = models.map(m => `<option value="${escHtml(m)}">${escHtml(m)}</option>`).join('');
-  const preferred = state.model;
-  if (preferred && models.includes(preferred)) sel.value = preferred;
-}
-
-function renderBrainChat() {
-  const win = document.getElementById('brain-chat-window');
+function renderHomeChat() {
+  const win = document.getElementById('home-chat-window');
   if (!win || !brainThread) return;
   win.innerHTML = '';
   const msgs = brainThread.messages.filter(m => m.role !== 'system');
@@ -3951,11 +3990,11 @@ function renderBrainChat() {
     win.innerHTML = '<p class="brain-empty">Ask anything about this system — its APIs, data, architecture, or current state.</p>';
     return;
   }
-  msgs.forEach(m => appendBrainMsgEl(win, m.role, m.content));
+  msgs.forEach(m => appendHomeChatMsgEl(win, m.role, m.content));
   win.scrollTop = win.scrollHeight;
 }
 
-function appendBrainMsgEl(win, role, content) {
+function appendHomeChatMsgEl(win, role, content) {
   const div = document.createElement('div');
   div.className = `brain-msg brain-msg-${role}`;
   if (role === 'assistant') {
@@ -3967,33 +4006,26 @@ function appendBrainMsgEl(win, role, content) {
   return div;
 }
 
-async function sendBrainMessage(overrideContent) {
-  if (brainBusy || !brainThread) return;
-  const input = document.getElementById('brain-input');
-  const text  = overrideContent ?? input.value.trim();
-  if (!text) return;
+async function sendHomeBrainMessage(text) {
+  if (brainBusy || !brainThread || !text) return;
 
-  const model = document.getElementById('brain-model-select')?.value || models[0] || '';
+  const model = document.getElementById('home-model-select')?.value || models[0] || '';
   if (!model) { alert('No model selected'); return; }
 
-  if (!overrideContent) {
-    input.value = '';
-    input.style.height = 'auto';
-  }
   brainBusy = true;
-  document.getElementById('brain-send-btn').disabled    = true;
-  document.getElementById('brain-abandon-btn').hidden   = false;
+  document.getElementById('home-send-btn').disabled  = true;
+  document.getElementById('home-abandon-btn').hidden = false;
 
   const userMsg = { id: uid(), role: 'user', content: text };
   brainThread.messages.push(userMsg);
   api('POST', `/api/threads/${brainThread.id}/messages`, userMsg).catch(() => {});
 
-  const win = document.getElementById('brain-chat-window');
+  document.getElementById('section-home').classList.add('home-active');
+  const win = document.getElementById('home-chat-window');
   win.querySelector('.brain-empty')?.remove();
-  appendBrainMsgEl(win, 'user', text);
+  appendHomeChatMsgEl(win, 'user', text);
   win.scrollTop = win.scrollHeight;
 
-  // Fetch fresh status to build up-to-date system prompt
   let status = {};
   try { status = await api('GET', '/api/brain/status'); } catch (_) {}
 
@@ -4012,7 +4044,6 @@ async function sendBrainMessage(overrideContent) {
   let full = '';
   let tokens = 0;
 
-  // Brain always has files + web tools
   const brainToolPerms = { files: true, web: true };
   const brainTools     = buildTools(brainToolPerms);
 
@@ -4062,7 +4093,6 @@ async function sendBrainMessage(overrideContent) {
         looping = true;
       }
     }
-    // After stream: replace with action-card-aware render
     renderWithActions(assistantDiv, full);
     win.scrollTop = win.scrollHeight;
   } catch (e) {
@@ -4075,8 +4105,8 @@ async function sendBrainMessage(overrideContent) {
 
   brainAbort = null;
   brainBusy  = false;
-  document.getElementById('brain-send-btn').disabled  = false;
-  document.getElementById('brain-abandon-btn').hidden = true;
+  document.getElementById('home-send-btn').disabled  = false;
+  document.getElementById('home-abandon-btn').hidden = true;
 }
 
 async function loadBrainPanel() {
@@ -4162,22 +4192,6 @@ document.getElementById('brain-auto-btn').addEventListener('click', () => {
   const btn = document.getElementById('brain-auto-btn');
   btn.classList.toggle('active', brainAutoAccept);
   btn.title = brainAutoAccept ? 'Auto-accept: ON — actions execute immediately' : 'Auto-accept actions (off)';
-});
-
-document.getElementById('brain-send-btn').addEventListener('click', sendBrainMessage);
-document.getElementById('brain-abandon-btn').addEventListener('click', () => brainAbort?.abort());
-document.getElementById('brain-clear-btn').addEventListener('click', async () => {
-  if (!brainThread || !confirm('Clear brain chat history?')) return;
-  brainThread.messages = [];
-  api('DELETE', `/api/threads/${brainThread.id}/messages`).catch(() => {});
-  renderBrainChat();
-});
-document.getElementById('brain-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendBrainMessage(); }
-});
-document.getElementById('brain-input').addEventListener('input', e => {
-  e.target.style.height = 'auto';
-  e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
 });
 
 // ── Code ──────────────────────────────────────────────────────────────────────
