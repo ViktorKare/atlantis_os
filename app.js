@@ -4032,7 +4032,7 @@ function initBrainModelSelect() {
   const sel = document.getElementById('brain-model-select');
   if (!sel || !models.length) return;
   sel.innerHTML = models.map(m => `<option value="${escHtml(m)}">${escHtml(m)}</option>`).join('');
-  const preferred = state.model;
+  const preferred = settings.homeModel;
   if (preferred && models.includes(preferred)) sel.value = preferred;
 }
 
@@ -4114,7 +4114,7 @@ async function sendBrainMessage(overrideContent) {
     let looping = true;
     while (looping) {
       looping = false;
-      const body = { model, messages: apiMessages, stream: true, options: { num_ctx: 8192 } };
+      const body = { model, messages: apiMessages, stream: true };
       if (brainTools.length) body.tools = brainTools;
 
       const resp = await fetch(`${await resolveOllama()}/api/chat`, {
