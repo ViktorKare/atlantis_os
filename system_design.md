@@ -115,6 +115,9 @@ Both started as systemd user services via `bash setup-services.sh`.
     + hub browser (search ollama.com library, paginated)
   - Hardware chips: RAM / VRAM / free disk from /api/models/sysinfo
     (Linux: /proc/meminfo + nvidia-smi; macOS: sysctl, unified memory = VRAM)
+  - Host dropdown (Auto + one per network host): Auto probes the Atlantis
+    server's own machine; a specific host probes that host's real specs
+    live over SSH, with fit badges computed the same way for both
   - Fit badges per size/tag: ◉ GPU fit (≤ VRAM) · ◎ CPU fit (≤ RAM × 0.65) · ✕ too large
     — search results use estimated size (params × 0.6 GB ≈ Q4_K_M);
     expanding a card fetches /library/:name/tags for exact per-tag GB + context
@@ -122,6 +125,18 @@ Both started as systemd user services via `bash setup-services.sh`.
     progress bar (fetch + ReadableStream, same pattern as chat); "too large"
     tags have Install disabled
   - Lazy init on first tab activation; installed list refreshed on every switch
+
+  **Hosts**
+  - Card grid, one card per LAN machine that may run Ollama: name, ip:port,
+    MAC, OS · GPU architecture line, status dot (green = online + Ollama
+    running, yellow = online only, gray = offline), priority ↑/↓, Wake
+    (disabled without a saved MAC), Check SSH (transient result pill,
+    clears on the next 10s poll), Edit, Delete
+  - Host CRUD regenerates settings.endpoint (the Ollama fallback chain
+    resolve_ollama_endpoint() already consumes) from enabled hosts ordered
+    by priority
+  - Auto-polls /api/hosts/check every 10s while the tab is visible;
+    cleared on navigating away
 
   **Settings**
   - Endpoint URL (Ollama, default: http://localhost:11434)
@@ -173,6 +188,10 @@ Both started as systemd user services via `bash setup-services.sh`.
 
   code_sessions     id, root_path, open_files, active_file, updated_at
 
+  network_hosts     id, name, ip, mac, ollama_port, priority, enabled, created_at,
+                    os (macos|linux|windows, nullable), gpu_arch (nvidia|apple_silicon|
+                    amd|cpu_only, nullable), ssh_user (default 'viktor')
+
 ### Model router (stored in settings as model_router JSON)
 
   Default tiers:
@@ -194,6 +213,15 @@ Both started as systemd user services via `bash setup-services.sh`.
   POST /api/agents                create agent
   PUT  /api/agents/:id            update agent
   DELETE /api/agents/:id          delete agent
+
+  GET  /api/hosts                 host list
+  POST /api/hosts                 create host
+  PUT  /api/hosts/:id             update host
+  DELETE /api/hosts/:id           delete host
+  POST /api/hosts/reorder         reorder by priority {order: [ids]}
+  POST /api/hosts/check           concurrent ping+Ollama probe → {host_id: {online, ollamaRunning, modelCount}}
+  POST /api/hosts/:id/wake        send Wake-on-LAN magic packet
+  POST /api/hosts/:id/check-ssh   real key-based SSH reachability check → {ok, error?}
 
   GET  /api/threads               all threads with embedded messages
   POST /api/threads               create thread
@@ -246,7 +274,12 @@ Both started as systemd user services via `bash setup-services.sh`.
   GET  /api/web/fetch?url=        URL fetch + HTML strip (pipeline tool)
 
   GET  /api/models/local          proxy Ollama /api/tags (endpoint from settings)
-  GET  /api/models/sysinfo        {ram_gb, vram_gb, disk_free_gb}
+  GET  /api/models/sysinfo?host_id=   {ram_gb, vram_gb, disk_free_gb, live, os, gpu_arch}
+                                   no host_id = local probe (Auto), always live:true;
+                                   host_id = remote probe over SSH using that host's
+                                   os/ssh_user/gpu_arch; live:false on SSH failure or
+                                   unsupported os (falls back to a static os/gpu_arch
+                                   badge client-side instead of numeric chips)
   GET  /api/models/search?q=&p=   scrape ollama.com/search → {models:[{name,
                                   description, sizes, capabilities, pulls}]}
   GET  /api/models/tags?name=     scrape ollama.com/library/:name/tags →
