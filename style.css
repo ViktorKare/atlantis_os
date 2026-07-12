@@ -2162,19 +2162,12 @@ button { font-family: inherit; }
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
+  border-right: 1px solid var(--border);
 }
-#pipe-split-handle {
-  flex-shrink: 0;
-  height: 5px;
-  margin: -1px 0;
-  background: var(--border);
-  cursor: row-resize;
-  position: relative;
-  z-index: 2;
-}
-#pipe-split-handle:hover,
-#pipe-split-handle.dragging {
-  background: var(--accent);
+
+/* ── Debug section ───────────────────────────────────────── */
+#section-debug {
+  overflow: hidden;
 }
 #pipe-toolbar {
   display: flex;
@@ -2213,7 +2206,6 @@ button { font-family: inherit; }
 .pipe-mode-btn:hover:not(:disabled):not(.active) { color: var(--accent); }
 .pipe-mode-btn.active { background: var(--grad-accent); color: #fff; }
 .pipe-mode-btn:disabled { opacity: .4; cursor: default; }
-#pipe-debug-btn.active { border-color: var(--accent); color: var(--accent); }
 .pipe-toolbar-actions { display: flex; gap: 6px; }
 .pipe-toolbar-actions button {
   padding: 5px 12px;

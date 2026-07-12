@@ -81,9 +81,9 @@ function escHtml(s) {
 // ── Section routing ───────────────────────────────────────────────────────────
 function switchSection(name) {
   const curEl = document.getElementById(`section-${activeSection}`);
-  const scrollable = curEl?.querySelector('#chat-window, .editor-area, #settings-main, #brain-chat-window, #dbg-log-body');
+  const scrollable = curEl?.querySelector('#chat-window, .editor-area, #settings-main, #home-chat-window, #dbg-log-body');
   if (scrollable) sectionScrolls[activeSection] = scrollable.scrollTop;
-  if (activeSection === 'debug' || activeSection === 'pipelines') stopDebug();
+  if (activeSection === 'debug') stopDebug();
   if (activeSection === 'hosts') stopHostsPolling();
 
   document.querySelectorAll('.section').forEach(el => el.classList.remove('active'));
@@ -93,7 +93,7 @@ function switchSection(name) {
   activeSection = name;
 
   const newEl = document.getElementById(`section-${name}`);
-  const newScrollable = newEl?.querySelector('#chat-window, .editor-area, #settings-main, #brain-chat-window, #dbg-log-body');
+  const newScrollable = newEl?.querySelector('#chat-window, .editor-area, #settings-main, #home-chat-window, #dbg-log-body');
   if (newScrollable && sectionScrolls[name] != null) {
     newScrollable.scrollTop = sectionScrolls[name];
   }
@@ -102,8 +102,8 @@ function switchSection(name) {
   if (name === 'agents')   renderAgentList();
   if (name === 'tasks')    loadTasks().then(() => renderTaskList());
   if (name === 'plans')    loadPlanList().then(() => renderPlanList());
-  if (name === 'pipelines') { initPipeCanvas(); loadPipelines().then(renderPipeList); if (pipeDebugVisible) initDebug(); }
-  if (name === 'brain')    initBrain();
+  if (name === 'pipelines') { initPipeCanvas(); loadPipelines().then(renderPipeList); }
+  if (name === 'debug')    initDebug();
   if (name === 'models')   initModels();
   if (name === 'hosts')    initHosts();
   if (name === 'code')     initCode();
@@ -2130,7 +2130,6 @@ let pipeRunAbort = null;
 let pipeRunData  = null;         // stepIndex → step-run object
 let pipeDetailId = null;
 let pipeViewMode = 'edit';       // 'edit' | 'run'
-let pipeDebugVisible = localStorage.getItem('pipeDebugVisible') === '1';
 let pipeRunBarInterval = null;
 let pipeRunStartTime   = null;
 let pipeThinkStreamEl  = null;  // live stream div inside think panel
@@ -3721,90 +3720,6 @@ document.getElementById('pipe-mode-edit').addEventListener('click', () => {
 document.getElementById('pipe-mode-run').addEventListener('click', () => {
   if (activePipe && pipeViewMode !== 'run') enterRunView();
 });
-
-// ── Debug panel visibility (hidden by default; polling only runs while visible) ─
-
-function setDebugVisible(vis) {
-  pipeDebugVisible = vis;
-  localStorage.setItem('pipeDebugVisible', vis ? '1' : '0');
-  document.getElementById('pipe-debug-area')?.classList.toggle('hidden', !vis);
-  document.getElementById('pipe-split-handle')?.classList.toggle('hidden', !vis);
-  document.getElementById('pipe-debug-btn')?.classList.toggle('active', vis);
-  applyPipeSplit(vis);
-  if (vis && activeSection === 'pipelines') initDebug();
-  else stopDebug();
-}
-
-document.getElementById('pipe-debug-btn').addEventListener('click', () => setDebugVisible(!pipeDebugVisible));
-if (pipeDebugVisible) {
-  // restore saved visibility; polling starts when the pipelines section opens
-  document.getElementById('pipe-debug-area')?.classList.remove('hidden');
-  document.getElementById('pipe-split-handle')?.classList.remove('hidden');
-  document.getElementById('pipe-debug-btn')?.classList.add('active');
-  applyPipeSplit(true);
-}
-
-// ── Pipeline vertical split (draggable divider) ────────────────────────────────
-
-const PIPE_SPLIT_KEY = 'pipeSplitRatio';
-const PIPE_SPLIT_MIN = 0.15;
-const PIPE_SPLIT_MAX = 0.85;
-
-// The split's inline flex-grow values sum to 1, so a lone visible pane with
-// grow < 1 only fills a fraction of the container — clear the inline styles
-// when the debug pane is hidden so the canvas falls back to CSS `flex: 1`.
-function applyPipeSplit(vis) {
-  const top    = document.getElementById('pipe-canvas-area');
-  const bottom = document.getElementById('pipe-debug-area');
-  if (!top || !bottom) return;
-  if (!vis) {
-    top.style.flex    = '';
-    bottom.style.flex = '';
-    return;
-  }
-  const saved = parseFloat(localStorage.getItem(PIPE_SPLIT_KEY));
-  const ratio = (!isNaN(saved) && saved >= PIPE_SPLIT_MIN && saved <= PIPE_SPLIT_MAX) ? saved : 0.5;
-  top.style.flex    = `${ratio} 1 0`;
-  bottom.style.flex = `${1 - ratio} 1 0`;
-}
-
-(function initPipeSplit() {
-  const main    = document.getElementById('pipe-main');
-  const top     = document.getElementById('pipe-canvas-area');
-  const bottom  = document.getElementById('pipe-debug-area');
-  const handle  = document.getElementById('pipe-split-handle');
-
-  function applyRatio(ratio) {
-    top.style.flex    = `${ratio} 1 0`;
-    bottom.style.flex = `${1 - ratio} 1 0`;
-  }
-
-  handle.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    handle.setPointerCapture(e.pointerId);
-    handle.classList.add('dragging');
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-
-    function onMove(ev) {
-      const rect = main.getBoundingClientRect();
-      let ratio = (ev.clientY - rect.top) / rect.height;
-      ratio = Math.min(PIPE_SPLIT_MAX, Math.max(PIPE_SPLIT_MIN, ratio));
-      applyRatio(ratio);
-    }
-    function onUp() {
-      handle.classList.remove('dragging');
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      handle.removeEventListener('pointermove', onMove);
-      handle.removeEventListener('pointerup', onUp);
-      const ratio = parseFloat(top.style.flex);
-      if (!isNaN(ratio)) localStorage.setItem(PIPE_SPLIT_KEY, ratio);
-    }
-    handle.addEventListener('pointermove', onMove);
-    handle.addEventListener('pointerup', onUp);
-  });
-})();
 
 const THINK_SPLIT_KEY = 'pipeThinkWidth';
 
