@@ -205,11 +205,18 @@ def init_db():
             'ALTER TABLE network_hosts ADD COLUMN os       TEXT',
             'ALTER TABLE network_hosts ADD COLUMN gpu_arch TEXT',
             "ALTER TABLE network_hosts ADD COLUMN ssh_user TEXT NOT NULL DEFAULT 'viktor'",
+            "ALTER TABLE network_hosts ADD COLUMN capacity TEXT NOT NULL DEFAULT 'full'",
+            "ALTER TABLE agents ADD COLUMN fallback_model TEXT DEFAULT ''",
         ]:
             try:
                 db.execute(sql)
             except Exception:
                 pass
+
+        # One-time backfill: atlantis/self predates the capacity concept and
+        # is the one host known to be meaningfully weaker than .205/.251 —
+        # safe to run unconditionally every startup (idempotent).
+        db.execute("UPDATE network_hosts SET capacity='limited' WHERE id='host-240'")
 
         # Seed default hosts on first run — matches the legacy
         # DEFAULT_OLLAMA_ENDPOINT fallback order (205 -> 251 -> 240).
@@ -217,15 +224,15 @@ def init_db():
         if count == 0:
             now = datetime.datetime.now().isoformat()
             seeds = [
-                ('host-205', 'Host .205',       '192.168.1.205', 1),
-                ('host-251', 'Host .251',       '192.168.1.251', 2),
-                ('host-240', 'Atlantis / self', '192.168.1.240', 3),
+                ('host-205', 'Host .205',       '192.168.1.205', 1, 'full'),
+                ('host-251', 'Host .251',       '192.168.1.251', 2, 'full'),
+                ('host-240', 'Atlantis / self', '192.168.1.240', 3, 'limited'),
             ]
-            for hid, name, ip, priority in seeds:
+            for hid, name, ip, priority, capacity in seeds:
                 db.execute(
-                    'INSERT INTO network_hosts (id,name,ip,mac,ollama_port,priority,enabled,created_at) '
-                    'VALUES (?,?,?,?,?,?,?,?)',
-                    (hid, name, ip, None, 11434, priority, 1, now)
+                    'INSERT INTO network_hosts (id,name,ip,mac,ollama_port,priority,enabled,created_at,capacity) '
+                    'VALUES (?,?,?,?,?,?,?,?,?)',
+                    (hid, name, ip, None, 11434, priority, 1, now, capacity)
                 )
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
@@ -251,6 +258,7 @@ def regenerate_ollama_endpoint_setting(db):
 
 HOST_OS_VALUES  = {'macos', 'linux', 'windows'}
 HOST_GPU_VALUES = {'nvidia', 'apple_silicon', 'amd', 'cpu_only'}
+HOST_CAPACITY_VALUES = {'full', 'limited'}
 
 def ping_host(ip):
     try:
@@ -709,9 +717,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         tools = json.dumps(body.get('tools') or {})
         with get_db() as db:
             db.execute(
-                'INSERT INTO agents (id,name,model,system_prompt,temperature,top_p,context_len,tools) VALUES (?,?,?,?,?,?,?,?)',
+                'INSERT INTO agents (id,name,model,system_prompt,temperature,top_p,context_len,tools,fallback_model) VALUES (?,?,?,?,?,?,?,?,?)',
                 (body['id'], body['name'], body.get('model',''), body.get('systemPrompt',''),
-                 body.get('temperature',0.7), body.get('topP',0.9), body.get('contextLen',4096), tools)
+                 body.get('temperature',0.7), body.get('topP',0.9), body.get('contextLen',4096), tools,
+                 body.get('fallbackModel',''))
             )
         self._json({'ok': True})
 
@@ -719,9 +728,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         tools = json.dumps(body.get('tools') or {})
         with get_db() as db:
             db.execute(
-                'UPDATE agents SET name=?,model=?,system_prompt=?,temperature=?,top_p=?,context_len=?,tools=? WHERE id=?',
+                'UPDATE agents SET name=?,model=?,system_prompt=?,temperature=?,top_p=?,context_len=?,tools=?,fallback_model=? WHERE id=?',
                 (body['name'], body.get('model',''), body.get('systemPrompt',''),
-                 body.get('temperature',0.7), body.get('topP',0.9), body.get('contextLen',4096), tools, id)
+                 body.get('temperature',0.7), body.get('topP',0.9), body.get('contextLen',4096), tools,
+                 body.get('fallbackModel',''), id)
             )
         self._json({'ok': True})
 
@@ -740,7 +750,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             'id': row['id'], 'name': row['name'], 'model': row['model'],
             'systemPrompt': row['system_prompt'], 'temperature': row['temperature'],
             'topP': row['top_p'], 'contextLen': row['context_len'],
-            'tools': tools,
+            'tools': tools, 'fallbackModel': row['fallback_model'] or '',
         }
 
     # ── Network hosts ──────────────────────────────────────────────────────
@@ -751,6 +761,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             'mac': row['mac'], 'ollamaPort': row['ollama_port'],
             'priority': row['priority'], 'enabled': bool(row['enabled']),
             'os': row['os'], 'gpuArch': row['gpu_arch'], 'sshUser': row['ssh_user'],
+            'capacity': row['capacity'],
         }
 
     def _get_hosts(self):
@@ -765,6 +776,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ip   = (body.get('ip') or '').strip()
         os_  = (body.get('os') or '').strip() or None
         gpu  = (body.get('gpuArch') or '').strip() or None
+        cap  = (body.get('capacity') or 'full').strip()
         if not name or not ip or not body.get('id'):
             return self.send_error(400)
         if ip.startswith('-') or (body.get('sshUser') or '').strip().startswith('-'):
@@ -773,16 +785,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_error(400)
         if gpu and gpu not in HOST_GPU_VALUES:
             return self.send_error(400)
+        if cap not in HOST_CAPACITY_VALUES:
+            return self.send_error(400)
         with get_db() as db:
             max_row = db.execute('SELECT MAX(priority) m FROM network_hosts').fetchone()
             priority = (max_row['m'] or 0) + 1
             now = datetime.datetime.now().isoformat()
             db.execute(
-                'INSERT INTO network_hosts (id,name,ip,mac,ollama_port,priority,enabled,created_at,os,gpu_arch,ssh_user) '
-                'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                'INSERT INTO network_hosts (id,name,ip,mac,ollama_port,priority,enabled,created_at,os,gpu_arch,ssh_user,capacity) '
+                'VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
                 (body['id'], name, ip, (body.get('mac') or '').strip() or None,
                  int(body.get('ollamaPort') or 11434), priority, 1, now,
-                 os_, gpu, (body.get('sshUser') or 'viktor').strip())
+                 os_, gpu, (body.get('sshUser') or 'viktor').strip(), cap)
             )
             regenerate_ollama_endpoint_setting(db)
         self._json({'ok': True})
@@ -792,6 +806,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ip   = (body.get('ip') or '').strip()
         os_  = (body.get('os') or '').strip() or None
         gpu  = (body.get('gpuArch') or '').strip() or None
+        cap  = (body.get('capacity') or 'full').strip()
         if not name or not ip:
             return self.send_error(400)
         if ip.startswith('-') or (body.get('sshUser') or '').strip().startswith('-'):
@@ -800,13 +815,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_error(400)
         if gpu and gpu not in HOST_GPU_VALUES:
             return self.send_error(400)
+        if cap not in HOST_CAPACITY_VALUES:
+            return self.send_error(400)
         with get_db() as db:
             db.execute(
-                'UPDATE network_hosts SET name=?, ip=?, mac=?, ollama_port=?, enabled=?, os=?, gpu_arch=?, ssh_user=? WHERE id=?',
+                'UPDATE network_hosts SET name=?, ip=?, mac=?, ollama_port=?, enabled=?, os=?, gpu_arch=?, ssh_user=?, capacity=? WHERE id=?',
                 (name, ip, (body.get('mac') or '').strip() or None,
                  int(body.get('ollamaPort') or 11434),
                  1 if body.get('enabled', True) else 0,
-                 os_, gpu, (body.get('sshUser') or 'viktor').strip(), id)
+                 os_, gpu, (body.get('sshUser') or 'viktor').strip(), cap, id)
             )
             regenerate_ollama_endpoint_setting(db)
         self._json({'ok': True})

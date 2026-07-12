@@ -35,11 +35,40 @@ async function resolveOllama() {
   return candidates[0];
 }
 
+// Host capacity ('full' vs 'limited') drives per-agent fallback-model and
+// Settings' secondary-default-agent selection — see `hosts` (loaded via
+// loadHosts()). A resolved URL with no matching network_hosts row (e.g. the
+// always-appended localhost catch-all) is treated as 'limited', since it's
+// the last-resort rung of the fallback chain.
+function capacityForUrl(url) {
+  if (!url) return 'limited';
+  try {
+    const u = new URL(url);
+    const port = parseInt(u.port || '11434', 10);
+    const host = (typeof hosts !== 'undefined' ? hosts : []).find(h => h.ip === u.hostname && h.ollamaPort === port);
+    return host ? (host.capacity || 'full') : 'limited';
+  } catch (_) {
+    return 'limited';
+  }
+}
+
+async function currentCapacity() {
+  return capacityForUrl(await resolveOllama());
+}
+
+function pickModel(agent, capacity) {
+  return (capacity === 'limited' && agent?.fallbackModel) ? agent.fallbackModel : agent?.model;
+}
+
+function pickDefaultAgentId(capacity) {
+  return (capacity === 'limited' && settings.defaultAgentIdFallback) ? settings.defaultAgentIdFallback : settings.defaultAgentId;
+}
+
 let state    = { threads: [], activeId: null, model: '', selectedAgentId: null };
 let models   = [];
 let agents   = [];
 let tasks    = [];
-let settings = { endpoint: OLLAMA, showTokenStats: true, showThinking: true, timeoutHours: 5, pipelineManagerModel: '', pipelineMaxRetries: 3, brainPrePrompt: '', agentPrePrompt: '', chatPrePrompt: '', codeServerUrl: 'http://localhost:5001', defaultAgentId: '' };
+let settings = { endpoint: OLLAMA, showTokenStats: true, showThinking: true, timeoutHours: 5, pipelineManagerModel: '', pipelineMaxRetries: 3, brainPrePrompt: '', agentPrePrompt: '', chatPrePrompt: '', codeServerUrl: 'http://localhost:5001', defaultAgentId: '', defaultAgentIdFallback: '' };
 
 let abortController = null;
 let isGenerating    = false;
@@ -161,6 +190,12 @@ function initSettingsForm() {
       agents.map(a => `<option value="${a.id}">${escHtml(a.name)}</option>`).join('');
     defAgentSel.value = settings.defaultAgentId || '';
   }
+  const defAgentFallbackSel = document.getElementById('setting-default-agent-fallback');
+  if (defAgentFallbackSel) {
+    defAgentFallbackSel.innerHTML = '<option value="">No agent</option>' +
+      agents.map(a => `<option value="${a.id}">${escHtml(a.name)}</option>`).join('');
+    defAgentFallbackSel.value = settings.defaultAgentIdFallback || '';
+  }
 }
 
 document.getElementById('save-settings-btn').addEventListener('click', () => {
@@ -176,6 +211,7 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
   settings.openaiApiKey          = document.getElementById('setting-openai-key')?.value     ?? '';
   settings.codeServerUrl         = document.getElementById('setting-code-server-url')?.value.trim() || 'http://localhost:5001';
   settings.defaultAgentId        = document.getElementById('setting-default-agent')?.value || '';
+  settings.defaultAgentIdFallback = document.getElementById('setting-default-agent-fallback')?.value || '';
   const btn = document.getElementById('save-settings-btn');
   btn.disabled = true;
   saveSettings()
@@ -226,7 +262,7 @@ async function loadAgents() {
 }
 
 async function createAgent() {
-  const agent = { id: uid(), name: 'New agent', model: state.model || '', systemPrompt: '', temperature: 0.7, topP: 0.9, contextLen: 4096, tools: { files: false, web: false, shell: false, browser: false } };
+  const agent = { id: uid(), name: 'New agent', model: state.model || '', fallbackModel: '', systemPrompt: '', temperature: 0.7, topP: 0.9, contextLen: 4096, tools: { files: false, web: false, shell: false, browser: false } };
   agents.unshift(agent);
   activeAgentId = agent.id;
   await api('POST', '/api/agents', agent).catch(() => {});
@@ -250,6 +286,7 @@ function saveAgentFromForm(id) {
   if (!agent) return;
   agent.name         = document.getElementById('agent-name').value.trim() || 'Unnamed';
   agent.model        = document.getElementById('agent-model').value;
+  agent.fallbackModel = document.getElementById('agent-fallback-model').value;
   agent.systemPrompt = document.getElementById('agent-system-prompt').value;
   agent.temperature  = parseFloat(document.getElementById('agent-temperature').value);
   agent.topP         = parseFloat(document.getElementById('agent-top-p').value);
@@ -355,6 +392,13 @@ function renderAgentEditor(agent) {
         <label>Model</label>
         <select id="agent-model">
           ${models.map(m => `<option value="${escHtml(m)}"${m === agent.model ? ' selected' : ''}>${escHtml(m)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="editor-field">
+        <label>Fallback model <span class="label-hint">(used when only limited-capacity hosts are reachable)</span></label>
+        <select id="agent-fallback-model">
+          <option value=""${!agent.fallbackModel ? ' selected' : ''}>Same as model above</option>
+          ${models.map(m => `<option value="${escHtml(m)}"${m === agent.fallbackModel ? ' selected' : ''}>${escHtml(m)}</option>`).join('')}
         </select>
       </div>
       <div class="editor-field">
@@ -479,16 +523,18 @@ async function loadHomePipelineRuns() {
   }
 }
 
-function initHome() {
+async function initHome() {
   homeGreeting.textContent = homeGreetingText();
 
   homeAgentSelect.innerHTML = '<option value="">No agent</option>' +
     agents.map(a => `<option value="${a.id}">${escHtml(a.name)}</option>`).join('');
-  const defAgent = settings.defaultAgentId ? agents.find(a => a.id === settings.defaultAgentId) : null;
+  const capacity  = await currentCapacity();
+  const defAgentId = pickDefaultAgentId(capacity);
+  const defAgent  = defAgentId ? agents.find(a => a.id === defAgentId) : null;
   homeAgentSelect.value = defAgent ? defAgent.id : '';
 
   homeModelSelect.innerHTML = modelSelect.innerHTML;
-  homeModelSelect.value = defAgent ? defAgent.model : state.model;
+  homeModelSelect.value = defAgent ? pickModel(defAgent, capacity) : state.model;
 
   renderHomeRecent();
   loadHomePipelineRuns();
@@ -646,7 +692,8 @@ async function runTask(id) {
   const task = tasks.find(t => t.id === id);
   if (!task || runningTaskId) return;
 
-  const model  = task.model || state.model;
+  const agent  = agents.find(a => a.id === task.agentId);
+  const model  = agent ? pickModel(agent, await currentCapacity()) : (task.model || state.model);
   const prompt = resolveTemplate(task.promptTemplate);
   if (!prompt.trim()) return;
 
@@ -659,7 +706,6 @@ async function runTask(id) {
   const run = { id: uid(), startedAt: new Date().toISOString(), finishedAt: null, output: '', tokenCount: 0, error: null };
 
   const msgs = [];
-  const agent      = agents.find(a => a.id === task.agentId);
   const toolPerms  = agent?.tools && Object.values(agent.tools).some(Boolean) ? agent.tools : null;
   const tools      = buildTools(toolPerms);
   const manifest   = buildToolManifest(toolPerms);
@@ -954,9 +1000,10 @@ function activeThread() {
 }
 
 async function createThread() {
-  const agentId = settings.defaultAgentId || null;
+  const capacity = await currentCapacity();
+  const agentId = pickDefaultAgentId(capacity) || null;
   const agent   = agentId ? agents.find(a => a.id === agentId) : null;
-  const model   = agent ? agent.model : state.model;
+  const model   = agent ? pickModel(agent, capacity) : state.model;
   const t = { id: uid(), name: 'New chat', model, agentId, systemPrompt: '', messages: [] };
   state.threads.unshift(t);
   state.activeId        = t.id;
@@ -1306,12 +1353,14 @@ async function send() {
   let doneMeta       = null;
   let stopped        = false;
 
+  const sendModel = (agent && agent.fallbackModel) ? pickModel(agent, await currentCapacity()) : state.model;
+
   try {
     // Tool-call loop: keep sending until model responds with text instead of tool calls
     let looping = true;
     while (looping) {
       looping = false;
-      const body = { model: state.model, messages: apiMessages, stream: true, options };
+      const body = { model: sendModel, messages: apiMessages, stream: true, options };
       if (tools.length) body.tools = tools;
 
       const res = await fetch(`${await resolveOllama()}/api/chat`, {
@@ -4486,7 +4535,8 @@ async function sendCodeMessage() {
     assistantDiv = appendCodeBubble('assistant', '▋');
     fullText = '';
     codeAbort = new AbortController();
-    const body = { model, messages: msgs, stream: true, options: {} };
+    const sendModel = (agent && agent.fallbackModel) ? pickModel(agent, await currentCapacity()) : model;
+    const body = { model: sendModel, messages: msgs, stream: true, options: {} };
     if (tools.length) body.tools = tools;
     if (agent?.temperature != null) body.options.temperature = agent.temperature;
     if (agent?.topP        != null) body.options.top_p       = agent.topP;
@@ -4612,7 +4662,7 @@ document.getElementById('code-new-dir-btn').addEventListener('click', async () =
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
-  await Promise.all([loadSettings(), loadAgents(), loadTasks(), load()]);
+  await Promise.all([loadSettings(), loadAgents(), loadTasks(), load(), loadHosts()]);
   await fetchModels();
   refreshAgentDropdown();
   // Restore last active thread's model/agent
@@ -4968,6 +5018,7 @@ let hostsEditingId = null;
 let sshCheckStatus = {};
 const HOST_OS_LABELS  = { macos: 'macOS', linux: 'Linux', windows: 'Windows' };
 const HOST_GPU_LABELS = { nvidia: 'NVIDIA', apple_silicon: 'Apple Silicon', amd: 'AMD', cpu_only: 'CPU only' };
+const HOST_CAPACITY_LABELS = { full: 'Full', limited: 'Limited' };
 
 function initModels() {
   if (!modelsUI.inited) {
@@ -5331,6 +5382,7 @@ function renderHostList() {
     const statusLabel = st.ollamaRunning ? `Ollama up · ${st.modelCount}` : st.online ? 'Ollama down' : 'Offline';
     const osLabel  = h.os      ? HOST_OS_LABELS[h.os]   : 'Unknown';
     const gpuLabel = h.gpuArch ? HOST_GPU_LABELS[h.gpuArch] : 'Unknown';
+    const capLabel = HOST_CAPACITY_LABELS[h.capacity] || 'Full';
     const ssh = sshCheckStatus[h.id];
     const sshPending = !!(ssh && ssh.pending);
     const sshPill = (ssh && !ssh.pending)
@@ -5344,7 +5396,7 @@ function renderHostList() {
       </div>
       <div class="host-ip">${escHtml(h.ip)}:${h.ollamaPort}</div>
       <div class="host-mac">${h.mac ? escHtml(h.mac) : 'No MAC saved'}</div>
-      <div class="host-os-gpu">${osLabel} · ${gpuLabel}</div>
+      <div class="host-os-gpu">${osLabel} · ${gpuLabel} · ${capLabel}</div>
       <div class="host-actions">
         <button class="btn-sm host-prio-up" title="Higher priority">↑</button>
         <button class="btn-sm host-prio-down" title="Lower priority">↓</button>
@@ -5389,6 +5441,7 @@ function openHostForm(id) {
   document.getElementById('host-form-os').value       = h ? (h.os || '') : '';
   document.getElementById('host-form-gpu').value      = h ? (h.gpuArch || '') : '';
   document.getElementById('host-form-ssh-user').value = h ? h.sshUser : 'viktor';
+  document.getElementById('host-form-capacity').value = h ? (h.capacity || 'full') : 'full';
   document.getElementById('hosts-add-form').hidden = false;
 }
 
@@ -5404,14 +5457,15 @@ async function saveHostFromForm() {
   const os      = document.getElementById('host-form-os').value;
   const gpuArch = document.getElementById('host-form-gpu').value;
   const sshUser = document.getElementById('host-form-ssh-user').value.trim() || 'viktor';
+  const capacity = document.getElementById('host-form-capacity').value;
   if (!name || !ip) { alert('Name and IP are required'); return; }
   if (!os || !gpuArch) { alert('OS and GPU architecture are required'); return; }
   if (hostsEditingId) {
     const h = hosts.find(x => x.id === hostsEditingId);
     await api('PUT', `/api/hosts/${hostsEditingId}`,
-      { name, ip, mac, ollamaPort: h.ollamaPort, enabled: h.enabled, os, gpuArch, sshUser }).catch(() => {});
+      { name, ip, mac, ollamaPort: h.ollamaPort, enabled: h.enabled, os, gpuArch, sshUser, capacity }).catch(() => {});
   } else {
-    await api('POST', '/api/hosts', { id: uid(), name, ip, mac, ollamaPort: 11434, os, gpuArch, sshUser }).catch(() => {});
+    await api('POST', '/api/hosts', { id: uid(), name, ip, mac, ollamaPort: 11434, os, gpuArch, sshUser, capacity }).catch(() => {});
   }
   closeHostForm();
   await loadHosts();

@@ -486,6 +486,13 @@
           <label>SSH user</label>
           <input type="text" id="host-form-ssh-user" value="viktor" placeholder="viktor">
         </div>
+        <div class="editor-field">
+          <label>Capacity <span class="label-hint">(full-size vs. weaker fallback host)</span></label>
+          <select id="host-form-capacity">
+            <option value="full">Full</option>
+            <option value="limited">Limited</option>
+          </select>
+        </div>
         <div class="editor-actions">
           <button id="host-form-save-btn" class="btn-primary">Save</button>
           <button id="host-form-cancel-btn" class="btn-sm">Cancel</button>
@@ -546,6 +553,10 @@
             <div class="settings-field">
               <label for="setting-default-agent">Default agent</label>
               <select id="setting-default-agent"><option value="">No agent</option></select>
+            </div>
+            <div class="settings-field">
+              <label for="setting-default-agent-fallback">Default agent (fallback) <span class="label-hint">(used when only limited-capacity hosts are reachable)</span></label>
+              <select id="setting-default-agent-fallback"><option value="">No agent</option></select>
             </div>
           </div>
 
