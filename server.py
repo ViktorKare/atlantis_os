@@ -783,6 +783,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         gpu  = (body.get('gpuArch') or '').strip() or None
         if not name or not ip or not body.get('id'):
             return self.send_error(400)
+        if ip.startswith('-') or (body.get('sshUser') or '').strip().startswith('-'):
+            return self.send_error(400)
         if os_ and os_ not in HOST_OS_VALUES:
             return self.send_error(400)
         if gpu and gpu not in HOST_GPU_VALUES:
@@ -807,6 +809,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         os_  = (body.get('os') or '').strip() or None
         gpu  = (body.get('gpuArch') or '').strip() or None
         if not name or not ip:
+            return self.send_error(400)
+        if ip.startswith('-') or (body.get('sshUser') or '').strip().startswith('-'):
             return self.send_error(400)
         if os_ and os_ not in HOST_OS_VALUES:
             return self.send_error(400)

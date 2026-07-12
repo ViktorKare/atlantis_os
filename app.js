@@ -5089,10 +5089,14 @@ function initModels() {
 }
 
 async function loadSysinfo(hostId = '') {
+  const requested = hostId;
+  let sysinfo;
   try {
     const q = hostId ? `?host_id=${encodeURIComponent(hostId)}` : '';
-    modelsUI.sysinfo = await api('GET', `/api/models/sysinfo${q}`);
-  } catch { modelsUI.sysinfo = null; }
+    sysinfo = await api('GET', `/api/models/sysinfo${q}`);
+  } catch { sysinfo = null; }
+  if (modelsUI.hostId !== requested) return; // a newer host switch has already superseded this fetch
+  modelsUI.sysinfo = sysinfo;
   const el = document.getElementById('models-hw-chips');
   const s = modelsUI.sysinfo;
   if (s && s.live) {
