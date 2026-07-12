@@ -1443,15 +1443,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             for rel in self.UPDATE_REQUIRED_PATHS:
                 if not (src_root / rel).exists():
                     return self._json({'error': f'Invalid update: missing {rel}'}, 400)
+            # Stage all three copies before touching anything live, so a
+            # mid-copy failure (e.g. disk full) never leaves a directory
+            # deleted with no replacement ready.
+            staged = []
             for name in ('web', 'server', 'agent'):
+                staging = ROOT_DIR / f'{name}.new'
+                if staging.exists():
+                    shutil.rmtree(staging)
+                shutil.copytree(src_root / name, staging)
+                staged.append(name)
+            for name in staged:
                 dest = ROOT_DIR / name
+                staging = ROOT_DIR / f'{name}.new'
                 if dest.exists():
                     shutil.rmtree(dest)
-                shutil.copytree(src_root / name, dest)
+                staging.rename(dest)
             RESTART_FLAG.touch()
             self._json({'ok': True})
+        except Exception as e:
+            self._json({'error': f'Update failed: {e}'}, 500)
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
+            for name in ('web', 'server', 'agent'):
+                staging = ROOT_DIR / f'{name}.new'
+                if staging.exists():
+                    shutil.rmtree(staging, ignore_errors=True)
 
     def _post_system_restart(self):
         RESTART_FLAG.touch()
