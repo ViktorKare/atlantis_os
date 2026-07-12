@@ -2056,20 +2056,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _pipe_path_safe(self, raw, work_root=None):
         """Resolve a path for pipeline tool use.
-        If the path is absolute but not under /home, treat it as relative to work_root."""
+        If the path is absolute but not under the home directory, treat it as relative to work_root."""
         if work_root is None:
             work_root = str(self._fs_root())
+        home = str(Path.home().resolve())
         raw = str(raw).strip()
         p = Path(raw)
         if p.is_absolute():
             resolved = p.resolve()
-            if not str(resolved).startswith('/home'):
+            if not str(resolved).startswith(home):
                 # Model generated a wrong absolute path — strip leading / and anchor to work_root
                 resolved = (Path(work_root) / raw.lstrip('/')).resolve()
         else:
             resolved = (Path(work_root) / raw).resolve()
-        if not str(resolved).startswith('/home'):
-            raise PermissionError(f'Path outside /home is not allowed: {resolved}')
+        if not str(resolved).startswith(home):
+            raise PermissionError(f'Path outside home directory is not allowed: {resolved}')
         return resolved
 
     def _tools_exec(self, body):
@@ -2339,10 +2340,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if root is None:
             root = self._fs_root().resolve()
         p = Path(rel).resolve() if str(rel).startswith('/') else (root / rel).resolve()
-        # Allow anywhere under /home — code session root is the displayed tree root, not a security fence
-        home = Path('/home').resolve()
+        # Allow anywhere under the user's home directory — code session root is the displayed tree root, not a security fence
+        home = Path.home().resolve()
         if not str(p).startswith(str(home)):
-            raise PermissionError(f'Path outside /home: {p}')
+            raise PermissionError(f'Path outside home directory: {p}')
         return p
 
     def _fs_list(self):
