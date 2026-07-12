@@ -9,7 +9,7 @@ CONFIG_FILE = ROOT_DIR / 'atlantis.config.json'
 
 OLLAMA_MACOS_URL   = 'https://ollama.com/download/Ollama-darwin.zip'
 OLLAMA_WINDOWS_URL = 'https://ollama.com/download/OllamaSetup.exe'
-OLLAMA_LINUX_URL   = 'https://ollama.com/download/ollama-linux-amd64.tgz'
+OLLAMA_LINUX_URL   = 'https://ollama.com/download/ollama-linux-amd64.tar.zst'
 
 WELCOME_TEXT = """
 Atlantis OS — a local AI workspace that runs entirely on your machine,
@@ -76,12 +76,21 @@ def install_ollama_windows():
 
 def install_ollama_linux_tarball():
     print('Downloading Ollama (Linux, no-root install)...')
+    zstd_bin = shutil.which('zstd') or shutil.which('unzstd')
+    if not zstd_bin:
+        print('Ollama install failed: the "zstd" tool is required to extract the Linux release but was not found.')
+        print('Install it with your package manager, e.g.:')
+        print('  sudo apt install zstd      (Debian/Ubuntu)')
+        print('  sudo dnf install zstd      (Fedora)')
+        return
     ollama_dir = DATA_DIR / 'ollama'
     ollama_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
-        tgz_path = Path(tmp) / 'ollama-linux-amd64.tgz'
-        urllib.request.urlretrieve(OLLAMA_LINUX_URL, tgz_path)
-        with tarfile.open(tgz_path) as tf:
+        archive_path = Path(tmp) / 'ollama-linux-amd64.tar.zst'
+        urllib.request.urlretrieve(OLLAMA_LINUX_URL, archive_path)
+        tar_path = Path(tmp) / 'ollama-linux-amd64.tar'
+        subprocess.run([zstd_bin, '-d', '-f', str(archive_path), '-o', str(tar_path)], check=True)
+        with tarfile.open(tar_path) as tf:
             tf.extractall(ollama_dir)
     bin_path = ollama_dir / 'bin' / 'ollama'
     if bin_path.exists():
@@ -156,7 +165,7 @@ Description=Atlantis OS Launcher
 [Service]
 Type=simple
 WorkingDirectory={ROOT_DIR}
-ExecStart={sys.executable} {ROOT_DIR / "launcher.py"}
+ExecStart="{sys.executable}" "{ROOT_DIR / 'launcher.py'}"
 Restart=on-failure
 RestartSec=3
 
