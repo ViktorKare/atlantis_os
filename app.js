@@ -419,15 +419,6 @@ function initHome() {
   renderHomeRecent();
 }
 
-document.querySelectorAll('.idea-chip').forEach(chip => {
-  chip.addEventListener('click', () => {
-    homeInput.value = chip.dataset.prompt;
-    homeInput.style.height = 'auto';
-    homeInput.style.height = Math.min(homeInput.scrollHeight, 160) + 'px';
-    homeInput.focus();
-  });
-});
-
 async function sendFromHome() {
   const text = homeInput.value.trim();
   if (!text) return;
