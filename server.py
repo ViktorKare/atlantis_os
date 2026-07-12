@@ -13,7 +13,6 @@ BASE_DIR       = Path(__file__).parent
 DB_FILE        = Path('/home/viktor/.local/share/atlantis/data.db')
 PLANS_DIR      = BASE_DIR / 'plans'
 ZONE_DIR        = Path('/home/viktor/library/projects/zone')
-AGENT_ZONES_DIR = ZONE_DIR / 'agent_zones'
 PROJECTS_DIR    = ZONE_DIR / 'projects'
 
 DEFAULT_OLLAMA_ENDPOINT = 'http://192.168.1.205:11434,http://192.168.1.251:11434,http://192.168.1.240:11434,http://localhost:11434'
@@ -187,8 +186,8 @@ def init_db():
         ''')
         # Migrations for existing databases
         for sql in [
-            'ALTER TABLE agents ADD COLUMN file_access INTEGER DEFAULT 0',
-            'ALTER TABLE agents ADD COLUMN web_access  INTEGER DEFAULT 0',
+            'ALTER TABLE agents DROP COLUMN file_access',
+            'ALTER TABLE agents DROP COLUMN web_access',
             'ALTER TABLE agents ADD COLUMN tools       TEXT',
             'ALTER TABLE threads ADD COLUMN tools      TEXT',
             'ALTER TABLE pipeline_steps ADD COLUMN pass_full_output INTEGER DEFAULT 0',
@@ -552,8 +551,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p == '/api/export':            self._export()
         elif p == '/api/plans':             self._get_plans()
         elif p.startswith('/api/plans/'):   self._get_plan(p)
-        elif p.startswith('/api/agents/') and '/files' in p:
-            self._agent_files_get(p)
         elif p.startswith('/api/project/files'):
             self._project_files_get(p)
         elif p == '/api/web/search':        self._web_search()
@@ -605,8 +602,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._post_run(p.split('/')[3], body)
         elif p == '/api/import':            self._import(body)
         elif p.startswith('/api/plans/'):   self._post_plan(p, body)
-        elif p.startswith('/api/agents/') and '/files/' in p:
-            self._agent_files_post(p, body)
         elif p.startswith('/api/project/files/'):
             self._project_files_post(p, body)
         elif p == '/api/pipelines':          self._post_pipeline(body)
@@ -711,33 +706,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self._json([self._agent_out(r) for r in rows])
 
     def _post_agent(self, body):
-        file_access = 1 if body.get('fileAccess') else 0
-        web_access  = 1 if body.get('webAccess')  else 0
-        tools       = json.dumps(body.get('tools') or {})
+        tools = json.dumps(body.get('tools') or {})
         with get_db() as db:
             db.execute(
-                'INSERT INTO agents (id,name,model,system_prompt,temperature,top_p,context_len,file_access,web_access,tools) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                'INSERT INTO agents (id,name,model,system_prompt,temperature,top_p,context_len,tools) VALUES (?,?,?,?,?,?,?,?)',
                 (body['id'], body['name'], body.get('model',''), body.get('systemPrompt',''),
-                 body.get('temperature',0.7), body.get('topP',0.9), body.get('contextLen',4096),
-                 file_access, web_access, tools)
+                 body.get('temperature',0.7), body.get('topP',0.9), body.get('contextLen',4096), tools)
             )
-        if file_access:
-            (AGENT_ZONES_DIR / body['id']).mkdir(parents=True, exist_ok=True)
         self._json({'ok': True})
 
     def _put_agent(self, id, body):
-        file_access = 1 if body.get('fileAccess') else 0
-        web_access  = 1 if body.get('webAccess')  else 0
-        tools       = json.dumps(body.get('tools') or {})
+        tools = json.dumps(body.get('tools') or {})
         with get_db() as db:
             db.execute(
-                'UPDATE agents SET name=?,model=?,system_prompt=?,temperature=?,top_p=?,context_len=?,file_access=?,web_access=?,tools=? WHERE id=?',
+                'UPDATE agents SET name=?,model=?,system_prompt=?,temperature=?,top_p=?,context_len=?,tools=? WHERE id=?',
                 (body['name'], body.get('model',''), body.get('systemPrompt',''),
-                 body.get('temperature',0.7), body.get('topP',0.9), body.get('contextLen',4096),
-                 file_access, web_access, tools, id)
+                 body.get('temperature',0.7), body.get('topP',0.9), body.get('contextLen',4096), tools, id)
             )
-        if file_access:
-            (AGENT_ZONES_DIR / id).mkdir(parents=True, exist_ok=True)
         self._json({'ok': True})
 
     def _delete_agent(self, id):
@@ -756,8 +741,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             'id': row['id'], 'name': row['name'], 'model': row['model'],
             'systemPrompt': row['system_prompt'], 'temperature': row['temperature'],
             'topP': row['top_p'], 'contextLen': row['context_len'],
-            'fileAccess': bool(row['file_access']),
-            'webAccess':  bool(row['web_access']),
             'tools': tools,
         }
 
@@ -1069,14 +1052,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             msg_count    = db.execute('SELECT COUNT(*) FROM messages').fetchone()[0]
             run_count    = db.execute('SELECT COUNT(*) FROM task_runs').fetchone()[0]
         project_files = self._dir_listing(PROJECTS_DIR)
-        agent_zone_files = {
-            a['id']: self._dir_listing(AGENT_ZONES_DIR / a['id'])
-            for a in agents if a['fileAccess']
-        }
         self._json({
             'agents': agents, 'tasks': tasks, 'plans': plans,
             'threadCount': thread_count, 'messageCount': msg_count, 'runCount': run_count,
-            'projectFiles': project_files, 'agentZoneFiles': agent_zone_files,
+            'projectFiles': project_files,
         })
 
     # ── Export / Import / Clear ──────────────────────────────────────────────
@@ -1112,10 +1091,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                                (k, json.dumps(v)))
             if 'agents' in body:
                 for a in body['agents']:
-                    db.execute('INSERT OR REPLACE INTO agents (id,name,model,system_prompt,temperature,top_p,context_len,file_access,web_access) VALUES (?,?,?,?,?,?,?,?,?)',
+                    db.execute('INSERT OR REPLACE INTO agents (id,name,model,system_prompt,temperature,top_p,context_len) VALUES (?,?,?,?,?,?,?)',
                                (a['id'], a['name'], a.get('model',''), a.get('systemPrompt',''),
-                                a.get('temperature',0.7), a.get('topP',0.9), a.get('contextLen',4096),
-                                1 if a.get('fileAccess') else 0, 1 if a.get('webAccess') else 0))
+                                a.get('temperature',0.7), a.get('topP',0.9), a.get('contextLen',4096)))
             if 'threads' in body:
                 for t in body['threads']:
                     db.execute('INSERT OR REPLACE INTO threads (id,name,model,agent_id,system_prompt,updated_at) VALUES (?,?,?,?,?,?)',
@@ -1183,17 +1161,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         name = Path(raw).name
         return name if name and not name.startswith('.') else None
 
-    # ── Agent / project file access ───────────────────────────────────────────
-
-    def _resolve_agent_path(self, agent_id, rel):
-        """Return resolved Path if safe (within agent zone), else None."""
-        zone = AGENT_ZONES_DIR / agent_id
-        resolved = (zone / rel).resolve()
-        try:
-            resolved.relative_to(zone.resolve())
-            return resolved
-        except ValueError:
-            return None
+    # ── Project file access ─────────────────────────────────────────────────
 
     def _resolve_project_path(self, rel):
         """Return resolved Path if safe (within projects dir), else None."""
@@ -1232,35 +1200,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(body if isinstance(body, bytes) else body.encode())
         self._json({'ok': True})
-
-    def _agent_files_get(self, url_path):
-        # /api/agents/:id/files          → list
-        # /api/agents/:id/files/<rel>    → read
-        parts = url_path.split('/', 4)  # ['', 'api', 'agents', id, 'files[/rel]']
-        agent_id = parts[3]
-        after = urllib.parse.unquote(parts[4]) if len(parts) > 4 else 'files'
-        if after == 'files' or after == 'files/':
-            # listing: agent zone + projects
-            zone_files    = [f'zone/{f}' for f in self._dir_listing(AGENT_ZONES_DIR / agent_id)]
-            project_files = [f'project/{f}' for f in self._dir_listing(PROJECTS_DIR)]
-            self._json({'zone': zone_files, 'project': project_files})
-        else:
-            # read: strip leading 'files/'
-            rel = after[len('files/'):]
-            resolved = self._resolve_agent_path(agent_id, rel)
-            if not resolved:
-                return self.send_error(400)
-            self._serve_file(resolved)
-
-    def _agent_files_post(self, url_path, body):
-        # /api/agents/:id/files/<rel>
-        parts = url_path.split('/', 4)
-        agent_id = parts[3]
-        rel = urllib.parse.unquote(parts[4][len('files/'):])
-        resolved = self._resolve_agent_path(agent_id, rel)
-        if not resolved:
-            return self.send_error(400)
-        self._write_file(resolved, body)
 
     def _project_files_get(self, url_path):
         # /api/project/files             → list
