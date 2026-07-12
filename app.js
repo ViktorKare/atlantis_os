@@ -4211,13 +4211,6 @@ async function loadBrainPanel() {
     </details>`;
 }
 
-document.getElementById('brain-auto-btn').addEventListener('click', () => {
-  brainAutoAccept = !brainAutoAccept;
-  const btn = document.getElementById('brain-auto-btn');
-  btn.classList.toggle('active', brainAutoAccept);
-  btn.title = brainAutoAccept ? 'Auto-accept: ON — actions execute immediately' : 'Auto-accept actions (off)';
-});
-
 // ── Code ──────────────────────────────────────────────────────────────────────
 
 let codeSession  = null;
