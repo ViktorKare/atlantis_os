@@ -334,6 +334,7 @@ body::before {
 .recent-row + .recent-row { margin-top: 6px; }
 .recent-row:hover { border-color: var(--neon-cyan); box-shadow: var(--glow-cyan); }
 .recent-name { font-size: 13.5px; color: var(--text); }
+.recent-sub { font-size: 11px; color: var(--text-dim); margin-left: auto; }
 
 /* ── Shared section sidebar ──────────────────────────────── */
 

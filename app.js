@@ -436,6 +436,29 @@ function renderHomeRecent() {
   });
 }
 
+async function loadHomePipelineRuns() {
+  const el = document.getElementById('home-pipeline-runs');
+  if (!el) return;
+  try {
+    const runs = await api('GET', '/api/pipeline-runs/recent');
+    el.innerHTML = runs.length
+      ? runs.map(r => `
+          <div class="recent-row" data-pipeline-id="${escHtml(r.pipelineId)}">
+            <span class="recent-name">${escHtml(r.pipelineName || 'Pipeline')}</span>
+            <span class="recent-sub">${escHtml(r.status)}</span>
+          </div>`).join('')
+      : '<p class="empty-state">No pipeline runs yet</p>';
+    el.querySelectorAll('.recent-row').forEach(row => {
+      row.addEventListener('click', () => {
+        switchSection('pipelines');
+        selectPipeline(row.dataset.pipelineId);
+      });
+    });
+  } catch (e) {
+    el.innerHTML = `<p class="empty-state">Could not load: ${escHtml(e.message)}</p>`;
+  }
+}
+
 function initHome() {
   homeGreeting.textContent = homeGreetingText();
 
@@ -448,6 +471,7 @@ function initHome() {
   homeModelSelect.value = defAgent ? defAgent.model : state.model;
 
   renderHomeRecent();
+  loadHomePipelineRuns();
   renderHomeLayout();
 }
 
