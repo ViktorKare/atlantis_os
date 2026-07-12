@@ -7,13 +7,16 @@ import json, re, sqlite3, time, datetime, threading, http.server, urllib.request
 from pathlib import Path
 
 PORT           = 5000
-CERT_FILE      = Path('/home/viktor/.local/share/atlantis/certs/192.168.1.240.pem')
-KEY_FILE       = Path('/home/viktor/.local/share/atlantis/certs/192.168.1.240-key.pem')
-BASE_DIR       = Path(__file__).parent
-DB_FILE        = Path('/home/viktor/.local/share/atlantis/data.db')
-PLANS_DIR      = BASE_DIR / 'plans'
-ZONE_DIR        = Path('/home/viktor/library/projects/zone')
-PROJECTS_DIR    = ZONE_DIR / 'projects'
+BASE_DIR       = Path(__file__).parent           # server/
+ROOT_DIR       = BASE_DIR.parent                  # repo root
+WEB_DIR        = ROOT_DIR / 'web'
+DATA_DIR       = ROOT_DIR / 'data'
+CERT_FILE      = DATA_DIR / 'certs' / 'cert.pem'
+KEY_FILE       = DATA_DIR / 'certs' / 'key.pem'
+DB_FILE        = DATA_DIR / 'data.db'
+PLANS_DIR      = ROOT_DIR / 'plans'
+ZONE_DIR       = DATA_DIR / 'zone'
+PROJECTS_DIR   = ZONE_DIR / 'projects'
 
 DEFAULT_OLLAMA_ENDPOINT = 'http://192.168.1.205:11434,http://192.168.1.251:11434,http://192.168.1.240:11434,http://localhost:11434'
 _ollama_host_cache = {'url': None, 'ts': 0.0}
@@ -157,7 +160,7 @@ def init_db():
             );
             CREATE TABLE IF NOT EXISTS code_sessions (
                 id          TEXT PRIMARY KEY DEFAULT 'default',
-                root_path   TEXT NOT NULL DEFAULT '/home/viktor/library/projects',
+                root_path   TEXT NOT NULL DEFAULT '',
                 open_files  TEXT DEFAULT '[]',
                 active_file TEXT,
                 updated_at  TEXT
@@ -541,7 +544,7 @@ def _scheduler_tick(now):
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(BASE_DIR), **kwargs)
+        super().__init__(*args, directory=str(WEB_DIR), **kwargs)
 
     def do_GET(self):
         p = self.path.split('?')[0]
@@ -2330,7 +2333,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _fs_root(self):
         with get_db() as db:
             row = db.execute('SELECT root_path FROM code_sessions WHERE id=?', ('default',)).fetchone()
-        return Path(row['root_path'] if row else '/home/viktor/library/projects')
+        return Path(row['root_path']) if row and row['root_path'] else Path.home()
 
     def _fs_safe(self, rel, root=None):
         if root is None:
@@ -2443,7 +2446,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     active_file=excluded.active_file,
                     updated_at=excluded.updated_at
             ''', (
-                body.get('rootPath', '/home/viktor/library/projects'),
+                body.get('rootPath') or str(Path.home()),
                 json.dumps(body.get('openFiles', [])),
                 body.get('activeFile'),
                 now,

@@ -8,3 +8,6 @@ __pycache__/
 graphify-out/
 .claude/settings.local.json
 .worktrees/
+data/*
+!data/.gitkeep
+atlantis.config.json
