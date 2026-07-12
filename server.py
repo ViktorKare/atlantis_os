@@ -2075,32 +2075,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                if 'html' in ct else raw.decode('utf-8', errors='replace')
         return text[:50000], None
 
-    def _under_workspace(self, resolved, work_root):
-        """True when resolved is work_root itself or a descendant of it, comparing
-        real (symlink-followed) paths so a workspace that is itself a symlink
-        (e.g. mounted-drive workspaces) still matches its own contents."""
-        try:
-            resolved.relative_to(Path(work_root).resolve())
-            return True
-        except ValueError:
-            return False
-
     def _pipe_path_safe(self, raw, work_root=None):
         """Resolve a path for pipeline tool use.
-        If the path is absolute but not under work_root, treat it as relative to work_root."""
+        If the path is absolute but not under /home, treat it as relative to work_root."""
         if work_root is None:
             work_root = str(self._fs_root())
         raw = str(raw).strip()
         p = Path(raw)
         if p.is_absolute():
             resolved = p.resolve()
-            if not self._under_workspace(resolved, work_root):
+            if not str(resolved).startswith('/home'):
                 # Model generated a wrong absolute path — strip leading / and anchor to work_root
                 resolved = (Path(work_root) / raw.lstrip('/')).resolve()
         else:
             resolved = (Path(work_root) / raw).resolve()
-        if not self._under_workspace(resolved, work_root):
-            raise PermissionError(f'Path outside workspace ({work_root}) is not allowed: {resolved}')
+        if not str(resolved).startswith('/home'):
+            raise PermissionError(f'Path outside /home is not allowed: {resolved}')
         return resolved
 
     def _tools_exec(self, body):
