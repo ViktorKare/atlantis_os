@@ -567,6 +567,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._get_pipeline_steps(p.split('/')[3])
         elif p.startswith('/api/pipelines/') and p.endswith('/runs'):
             self._get_pipeline_runs(p.split('/')[3])
+        elif p == '/api/pipeline-runs/recent':
+            self._get_recent_pipeline_runs()
         elif p.startswith('/api/pipeline-runs/'):
             self._get_pipeline_run(p.split('/')[3])
         elif p.startswith('/api/pipelines/'):
@@ -1328,6 +1330,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             'userFeedback': row['user_feedback'] if 'user_feedback' in row.keys() else '',
             'parentRunId': row['parent_run_id'] if 'parent_run_id' in row.keys() else None,
         }
+
+    def _get_recent_pipeline_runs(self):
+        with get_db() as db:
+            rows = rows_to_list(db.execute('''
+                SELECT r.*, p.name as pipeline_name
+                FROM pipeline_runs r
+                LEFT JOIN pipelines p ON p.id = r.pipeline_id
+                ORDER BY r.started_at DESC LIMIT 10
+            ''').fetchall())
+        out = []
+        for r in rows:
+            o = self._pl_run_out(r)
+            o['pipelineName'] = r['pipeline_name']
+            out.append(o)
+        self._json(out)
 
     # ── Job queue ─────────────────────────────────────────────────────────────
 
