@@ -103,7 +103,7 @@ function switchSection(name) {
   if (name === 'tasks')    loadTasks().then(() => renderTaskList());
   if (name === 'plans')    loadPlanList().then(() => renderPlanList());
   if (name === 'pipelines') { initPipeCanvas(); loadPipelines().then(renderPipeList); }
-  if (name === 'debug')    initDebug();
+  if (name === 'debug')    { initDebug(); loadBrainPanel(); }
   if (name === 'models')   initModels();
   if (name === 'hosts')    initHosts();
   if (name === 'code')     initCode();
@@ -4175,7 +4175,6 @@ document.getElementById('brain-auto-btn').addEventListener('click', () => {
 
 document.getElementById('brain-send-btn').addEventListener('click', sendBrainMessage);
 document.getElementById('brain-abandon-btn').addEventListener('click', () => brainAbort?.abort());
-document.getElementById('brain-refresh-btn').addEventListener('click', loadBrainPanel);
 document.getElementById('brain-clear-btn').addEventListener('click', async () => {
   if (!brainThread || !confirm('Clear brain chat history?')) return;
   brainThread.messages = [];
@@ -4637,6 +4636,7 @@ function initDebug() {
   dbgLoadStatus();
   dbgPollTimer = setInterval(dbgLoadStatus, 3000);
 }
+document.getElementById('brain-refresh-btn').addEventListener('click', loadBrainPanel);
 
 function stopDebug() {
   if (dbgPollTimer) { clearInterval(dbgPollTimer); dbgPollTimer = null; }
