@@ -592,6 +592,17 @@
             </div>
           </div>
 
+          <div class="settings-group">
+            <h3>System</h3>
+            <div class="settings-actions">
+              <button id="system-update-btn">Update from zip…</button>
+              <button id="system-restart-btn">Restart</button>
+              <button id="system-stop-btn" class="btn-danger">Stop</button>
+              <input type="file" id="system-update-file" accept=".zip" hidden>
+            </div>
+            <p class="label-hint">Update replaces the app code (web/server/agent) with the contents of the zip you pick — your data is never touched. Restart/Stop affect the whole app, including this page.</p>
+          </div>
+
           <div class="settings-footer">
             <button id="save-settings-btn" class="btn-primary">Save</button>
           </div>

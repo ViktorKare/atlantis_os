@@ -35,6 +35,9 @@ def load_config():
 _config = load_config()
 PORT    = _config['port']
 
+RESTART_FLAG = DATA_DIR / '.restart'
+STOP_FLAG    = DATA_DIR / '.stop'
+
 DEFAULT_OLLAMA_ENDPOINT = 'http://192.168.1.205:11434,http://192.168.1.251:11434,http://192.168.1.240:11434,http://localhost:11434'
 _ollama_host_cache = {'url': None, 'ts': 0.0}
 
@@ -650,6 +653,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p == '/api/fs/rename':         self._fs_rename(body)
         elif p == '/api/tools/exec':        self._tools_exec(body)
         elif p == '/api/debug/restart':     self._restart_worker()
+        elif p == '/api/system/update':     self._post_system_update(body)
+        elif p == '/api/system/restart':    self._post_system_restart()
+        elif p == '/api/system/stop':       self._post_system_stop()
         else:
             self.send_error(404)
 
@@ -1415,6 +1421,45 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json({'ok': True})
         except Exception as e:
             self._json({'error': str(e)}, 500)
+
+    UPDATE_REQUIRED_PATHS = ('web/index.html', 'server/server.py', 'agent/worker.py')
+
+    def _post_system_update(self, raw):
+        import tempfile, zipfile, shutil
+        tmp_dir = Path(tempfile.mkdtemp(prefix='atlantis_update_'))
+        try:
+            zip_path = tmp_dir / 'update.zip'
+            zip_path.write_bytes(raw)
+            extract_dir = tmp_dir / 'extract'
+            try:
+                with zipfile.ZipFile(zip_path) as zf:
+                    zf.extractall(extract_dir)
+            except zipfile.BadZipFile:
+                return self._json({'error': 'Not a valid zip file'}, 400)
+            candidates = list(extract_dir.rglob('server/server.py'))
+            if not candidates:
+                return self._json({'error': 'Invalid update: server/server.py not found in zip'}, 400)
+            src_root = candidates[0].parent.parent
+            for rel in self.UPDATE_REQUIRED_PATHS:
+                if not (src_root / rel).exists():
+                    return self._json({'error': f'Invalid update: missing {rel}'}, 400)
+            for name in ('web', 'server', 'agent'):
+                dest = ROOT_DIR / name
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.copytree(src_root / name, dest)
+            RESTART_FLAG.touch()
+            self._json({'ok': True})
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _post_system_restart(self):
+        RESTART_FLAG.touch()
+        self._json({'ok': True})
+
+    def _post_system_stop(self):
+        STOP_FLAG.touch()
+        self._json({'ok': True})
 
     def _list_jobs(self):
         qs = urllib.parse.parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
