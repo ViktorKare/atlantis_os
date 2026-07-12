@@ -449,6 +449,13 @@ body::before {
 }
 #task-list li.running .item-sub { color: var(--accent); opacity: 1; }
 
+.agent-brain-pinned {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+  padding-bottom: 11px;
+}
+.agent-brain-pinned .item-name { color: var(--accent); }
+
 /* ── Chat main ───────────────────────────────────────────── */
 
 #chat-main {

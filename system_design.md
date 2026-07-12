@@ -66,7 +66,11 @@ Both started as systemd user services via `bash setup-services.sh`.
   - CRUD editor: name, model, system prompt, temperature (0–2), top-p (0–1),
     context length, native tools toggles (file system / web search & fetch /
     shell / browser — sent as an Ollama `tools` array for function calling)
-  - Saved agents appear in Chat toolbar "Agent" dropdown
+  - Brain is pinned as the first entry in the list: a virtual, undeletable
+    agent whose editor pane shows only a system-prompt textarea (backed by
+    `settings.brainPrePrompt`, the same value Home's Brain mode sends)
+  - Saved agents appear in Chat toolbar "Agent" dropdown (Brain is excluded —
+    it's only usable via Home's Brain mode)
 
   **Tasks**
   - CRUD editor: name, agent (optional), model, prompt template

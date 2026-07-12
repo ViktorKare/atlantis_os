@@ -148,8 +148,6 @@ function initSettingsForm() {
   const retEl = document.getElementById('setting-pipeline-retries');
   if (retEl) retEl.value = settings.pipelineMaxRetries ?? 3;
 
-  const brainPP = document.getElementById('setting-brain-preprompt');
-  if (brainPP) brainPP.value = settings.brainPrePrompt ?? '';
   const agentPP = document.getElementById('setting-agent-preprompt');
   if (agentPP) agentPP.value = settings.agentPrePrompt ?? '';
   const chatPP  = document.getElementById('setting-chat-preprompt');
@@ -172,7 +170,6 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
   settings.showThinking          = document.getElementById('setting-thinking').checked;
   settings.pipelineManagerModel  = document.getElementById('setting-pipeline-model')?.value || '';
   settings.pipelineMaxRetries    = parseInt(document.getElementById('setting-pipeline-retries')?.value, 10) || 3;
-  settings.brainPrePrompt        = document.getElementById('setting-brain-preprompt')?.value ?? '';
   settings.agentPrePrompt        = document.getElementById('setting-agent-preprompt')?.value ?? '';
   settings.chatPrePrompt         = document.getElementById('setting-chat-preprompt')?.value  ?? '';
   settings.anthropicApiKey       = document.getElementById('setting-anthropic-key')?.value  ?? '';
@@ -270,10 +267,30 @@ function saveAgentFromForm(id) {
   if (btn) { btn.textContent = 'Saved!'; setTimeout(() => { btn.textContent = 'Save agent'; }, 1500); }
 }
 
+const BRAIN_AGENT_ID = '__brain__';
+
 function renderAgentList() {
   threadList; // ensure chat refs don't shadow
   const list = document.getElementById('agent-list');
   list.innerHTML = '';
+
+  const brainLi = document.createElement('li');
+  brainLi.className = 'agent-brain-pinned' + (activeAgentId === BRAIN_AGENT_ID ? ' active' : '');
+  const brainName = document.createElement('span');
+  brainName.className = 'item-name';
+  brainName.textContent = '⚡ Brain';
+  const brainSub = document.createElement('span');
+  brainSub.className = 'item-sub';
+  brainSub.textContent = 'System assistant';
+  brainLi.appendChild(brainName);
+  brainLi.appendChild(brainSub);
+  brainLi.addEventListener('click', () => {
+    activeAgentId = BRAIN_AGENT_ID;
+    renderAgentList();
+    renderAgentEditor({ id: BRAIN_AGENT_ID });
+  });
+  list.appendChild(brainLi);
+
   agents.forEach(agent => {
     const li = document.createElement('li');
     li.className = agent.id === activeAgentId ? 'active' : '';
@@ -301,6 +318,31 @@ function renderAgentEditor(agent) {
   const main = document.getElementById('agents-main');
   if (!agent) {
     main.innerHTML = '<p class="empty-state">Select an agent or create a new one</p>';
+    return;
+  }
+  if (agent.id === BRAIN_AGENT_ID) {
+    main.innerHTML = `
+      <div class="editor-form">
+        <div class="editor-field">
+          <label>Name</label>
+          <input type="text" value="Brain" disabled>
+        </div>
+        <div class="editor-field">
+          <label>System prompt</label>
+          <textarea id="brain-system-prompt" rows="10" placeholder="Leave blank to use the built-in Brain intro…">${escHtml(settings.brainPrePrompt || '')}</textarea>
+          <div class="editor-hint">Brain has no model/temperature/tool settings here — its model is chosen live from the Home toolbar, and it always has full file (projects/) and web access.</div>
+        </div>
+        <div class="editor-actions">
+          <button id="save-agent-btn" class="btn-primary">Save agent</button>
+        </div>
+      </div>`;
+    document.getElementById('save-agent-btn').addEventListener('click', () => {
+      settings.brainPrePrompt = document.getElementById('brain-system-prompt').value;
+      saveSettings();
+      const btn = document.getElementById('save-agent-btn');
+      btn.textContent = 'Saved!';
+      setTimeout(() => { btn.textContent = 'Save agent'; }, 1500);
+    });
     return;
   }
   main.innerHTML = `
