@@ -25,6 +25,8 @@ def load_config():
         return dict(DEFAULT_CONFIG)
     try:
         cfg = json.loads(CONFIG_FILE.read_text())
+        if not isinstance(cfg, dict):
+            return dict(DEFAULT_CONFIG)
         return {**DEFAULT_CONFIG, **cfg}
     except (json.JSONDecodeError, OSError):
         return dict(DEFAULT_CONFIG)
