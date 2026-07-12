@@ -2115,13 +2115,9 @@ async function executeAction(action) {
     }
 
     case 'write_file': {
-      // scope: 'agent_zone' (requires agentId) | 'project'
       const relPath = action.path || '';
       if (!relPath) throw new Error('write_file requires a path');
-      const url = action.scope === 'project'
-        ? `/api/project/files/${relPath}`
-        : `/api/agents/${action.agentId}/files/${relPath}`;
-      const r = await fetch(url, {
+      const r = await fetch(`/api/project/files/${relPath}`, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain' },
         body: action.content || '',
@@ -2131,15 +2127,10 @@ async function executeAction(action) {
     }
 
     case 'list_files': {
-      const url = action.scope === 'project'
-        ? '/api/project/files'
-        : `/api/agents/${action.agentId}/files`;
-      const listing = await api('GET', url);
+      const listing = await api('GET', '/api/project/files');
       // Listing is already visible in the action card fields via buildActionCard.
       // Return a summary for the status line.
-      const count = Array.isArray(listing)
-        ? listing.length
-        : (listing.zone?.length ?? 0) + (listing.project?.length ?? 0);
+      const count = (listing || []).length;
       return `${count} file${count !== 1 ? 's' : ''} found`;
     }
 
@@ -3854,22 +3845,19 @@ const DEFAULT_BRAIN_PRE_PROMPT =
 `You are the Brain — the central AI assistant for a local Ollama automation platform. You help the user manage and operate the system: creating agents, scheduling tasks, writing plans, and working with files.
 
 ## What this system can do
-- **Agents** — AI personas with a custom model, system prompt, optional file workspace, and optional web access
+- **Agents** — AI personas with a custom model, system prompt, and native tools (file system, web search/fetch, shell, browser) via Ollama function calling
 - **Tasks** — automated prompts that run on a schedule (daily, weekly, monthly, or cron) using any agent
 - **Plans** — markdown strategy documents that can be broken into tasks
 - **Chat** — multi-thread conversations with any model or agent
-- **Files** — agents with file access can read/write their own zone and the shared projects/ workspace
-- **Web** — agents with web access can search and fetch URLs (DuckDuckGo search, HTTP fetch with HTML stripping)
-- **You (Brain)** — have full file access (projects/ + all agent zones) and full web access`;
+- **Files** — the shared projects/ workspace; agents with the "File system" native tool enabled can read/write there directly during chat
+- **Web** — agents with the "Web search & fetch" native tool enabled can search and fetch URLs (DuckDuckGo search, HTTP fetch with HTML stripping) during chat
+- **You (Brain)** — have full file access (projects/) and full web access`;
 
 function buildBrainSystemPrompt(status) {
   const agentLines = status.agents?.length
     ? status.agents.map(a => {
-        const caps = [
-          a.fileAccess ? `files: agent_zones/${a.id}/` : '',
-          a.webAccess  ? 'web'  : '',
-        ].filter(Boolean).join(', ');
-        return `  - "${a.name}"  id: ${a.id}  model: ${a.model || '—'}${caps ? `  [${caps}]` : ''}` +
+        const caps = a.tools ? Object.keys(a.tools).filter(k => a.tools[k]).join(', ') : '';
+        return `  - "${a.name}"  id: ${a.id}  model: ${a.model || '—'}${caps ? `  [tools: ${caps}]` : ''}` +
                (a.systemPrompt ? `\n    purpose: ${a.systemPrompt.slice(0, 120)}` : '');
       }).join('\n')
     : '  (none)';
@@ -3889,16 +3877,10 @@ function buildBrainSystemPrompt(status) {
     ? status.plans.map(p => `  - ${p.replace(/\.md$/, '')}`).join('\n')
     : '  (none)';
 
-  // File workspace listings
+  // File workspace listing
   const projectFiles = status.projectFiles?.length
     ? status.projectFiles.map(f => `  - ${f}`).join('\n')
     : '  (empty)';
-
-  const agentZoneBlocks = status.agents?.filter(a => a.fileAccess).map(a => {
-    const files = status.agentZoneFiles?.[a.id];
-    const listing = files?.length ? files.map(f => `    - ${f}`).join('\n') : '    (empty)';
-    return `  agent_zones/${a.id}/  (${a.name})\n${listing}`;
-  }).join('\n') || '  (no agents with file access)';
 
   const intro = settings.brainPrePrompt?.trim() || DEFAULT_BRAIN_PRE_PROMPT;
 
@@ -3920,14 +3902,12 @@ Threads: ${status.threadCount ?? 0} · Messages: ${status.messageCount ?? 0} · 
 projects/
 ${projectFiles}
 
-${agentZoneBlocks}
-
 ## Actions
 Emit a fenced \`\`\`action block with a JSON object to propose a change. The user sees a confirmation card and must click Confirm before anything executes.
 
 Create agent:
 \`\`\`action
-{"type":"create_agent","name":"Name","model":"llama3.1:8b","systemPrompt":"You are...","temperature":0.7,"fileAccess":false}
+{"type":"create_agent","name":"Name","model":"llama3.1:8b","systemPrompt":"You are...","temperature":0.7}
 \`\`\`
 
 Create task:
@@ -3946,17 +3926,9 @@ Write file (projects/):
 {"type":"write_file","scope":"project","path":"subfolder/file.md","content":"..."}
 \`\`\`
 
-Write file (agent zone):
-\`\`\`action
-{"type":"write_file","scope":"agent_zone","agentId":"<exact-id>","path":"notes/file.md","content":"..."}
-\`\`\`
-
 List files:
 \`\`\`action
 {"type":"list_files","scope":"project"}
-\`\`\`
-\`\`\`action
-{"type":"list_files","scope":"agent_zone","agentId":"<exact-id>"}
 \`\`\`
 
 Web search (DuckDuckGo):
@@ -3972,8 +3944,6 @@ Fetch a URL (returns cleaned text, private IPs blocked):
 Rules:
 - Always briefly explain what you're about to do before each block.
 - Use exact agent ids from the list above.
-- For write_file / list_files: only for agents with fileAccess (Brain always can).
-- For web_search / web_fetch: only for agents with webAccess (Brain always can). Private IPs are blocked server-side.
 - After web results are fetched the user clicks "Send to chat" before you see the content — wait for that.
 - Keep responses concise and practical.`
   + (brainAutoAccept
