@@ -728,7 +728,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _delete_agent(self, id):
         with get_db() as db:
             db.execute('DELETE FROM agents WHERE id=?', (id,))
-        # Agent zone dir is intentionally left on disk to avoid data loss.
         self._json({'ok': True})
 
     def _agent_out(self, row):
