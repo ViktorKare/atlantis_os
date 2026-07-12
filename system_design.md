@@ -64,7 +64,8 @@ Both started as systemd user services via `bash setup-services.sh`.
 
   **Agents**
   - CRUD editor: name, model, system prompt, temperature (0–2), top-p (0–1),
-    context length, file access toggle, web access toggle
+    context length, native tools toggles (file system / web search & fetch /
+    shell / browser — sent as an Ollama `tools` array for function calling)
   - Saved agents appear in Chat toolbar "Agent" dropdown
 
   **Tasks**

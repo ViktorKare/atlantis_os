@@ -229,7 +229,7 @@ async function loadAgents() {
 }
 
 async function createAgent() {
-  const agent = { id: uid(), name: 'New agent', model: state.model || '', systemPrompt: '', temperature: 0.7, topP: 0.9, contextLen: 4096, fileAccess: false, webAccess: false, tools: { files: false, web: false, shell: false, browser: false } };
+  const agent = { id: uid(), name: 'New agent', model: state.model || '', systemPrompt: '', temperature: 0.7, topP: 0.9, contextLen: 4096, tools: { files: false, web: false, shell: false, browser: false } };
   agents.unshift(agent);
   activeAgentId = agent.id;
   await api('POST', '/api/agents', agent).catch(() => {});
@@ -257,8 +257,6 @@ function saveAgentFromForm(id) {
   agent.temperature  = parseFloat(document.getElementById('agent-temperature').value);
   agent.topP         = parseFloat(document.getElementById('agent-top-p').value);
   agent.contextLen   = parseInt(document.getElementById('agent-context').value, 10);
-  agent.fileAccess   = document.getElementById('agent-file-access').checked;
-  agent.webAccess    = document.getElementById('agent-web-access').checked;
   agent.tools        = {
     files:   document.getElementById('agent-tool-files').checked,
     web:     document.getElementById('agent-tool-web').checked,
@@ -333,20 +331,6 @@ function renderAgentEditor(agent) {
         <label>Context length</label>
         <input type="number" id="agent-context" value="${agent.contextLen}" min="512" max="131072" step="512">
       </div>
-      <div class="editor-field toggle-field">
-        <label for="agent-file-access">File access</label>
-        <input type="checkbox" id="agent-file-access"${agent.fileAccess ? ' checked' : ''}>
-      </div>
-      <div id="agent-file-zone"${agent.fileAccess ? '' : ' class="hidden"'}>
-        <div class="editor-hint">Zone: <code>agent_zones/${agent.id}/</code> &middot; Shared: <code>projects/</code></div>
-      </div>
-      <div class="editor-field toggle-field">
-        <label for="agent-web-access">Web access</label>
-        <input type="checkbox" id="agent-web-access"${agent.webAccess ? ' checked' : ''}>
-      </div>
-      <div id="agent-web-hint"${agent.webAccess ? '' : ' class="hidden"'}>
-        <div class="editor-hint">Can search the web and fetch URLs via action blocks.</div>
-      </div>
       <div class="editor-field">
         <label>Native tools <span class="label-hint">(Ollama function calling)</span></label>
         <div class="toggle-row">
@@ -368,12 +352,6 @@ function renderAgentEditor(agent) {
   });
   document.getElementById('agent-top-p').addEventListener('input', e => {
     document.getElementById('agent-topp-val').textContent = e.target.value;
-  });
-  document.getElementById('agent-file-access').addEventListener('change', e => {
-    document.getElementById('agent-file-zone').classList.toggle('hidden', !e.target.checked);
-  });
-  document.getElementById('agent-web-access').addEventListener('change', e => {
-    document.getElementById('agent-web-hint').classList.toggle('hidden', !e.target.checked);
   });
   document.getElementById('save-agent-btn').addEventListener('click', () => saveAgentFromForm(agent.id));
   document.getElementById('delete-agent-btn').addEventListener('click', () => deleteAgent(agent.id));
@@ -2107,8 +2085,6 @@ async function executeAction(action) {
         temperature:  action.temperature  ?? 0.7,
         topP:         action.topP         ?? 0.9,
         contextLen:   action.contextLen   ?? 4096,
-        fileAccess:   action.fileAccess   ?? false,
-        webAccess:    action.webAccess    ?? false,
       };
       agents.unshift(agent);
       await api('POST', '/api/agents', agent);
