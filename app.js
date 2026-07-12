@@ -68,7 +68,8 @@ let state    = { threads: [], activeId: null, model: '', selectedAgentId: null }
 let models   = [];
 let agents   = [];
 let tasks    = [];
-let settings = { endpoint: OLLAMA, showTokenStats: true, showThinking: true, timeoutHours: 5, pipelineManagerModel: '', pipelineMaxRetries: 3, brainPrePrompt: '', agentPrePrompt: '', chatPrePrompt: '', codeServerUrl: 'http://localhost:5001', defaultAgentId: '', defaultAgentIdFallback: '' };
+const CODE_SERVER_DEFAULT = `http://${location.hostname}:5001`; // code-server always runs on the same host as this app
+let settings = { endpoint: OLLAMA, showTokenStats: true, showThinking: true, timeoutHours: 5, pipelineManagerModel: '', pipelineMaxRetries: 3, brainPrePrompt: '', agentPrePrompt: '', chatPrePrompt: '', codeServerUrl: CODE_SERVER_DEFAULT, defaultAgentId: '', defaultAgentIdFallback: '' };
 
 let abortController = null;
 let isGenerating    = false;
@@ -182,7 +183,7 @@ function initSettingsForm() {
   const chatPP  = document.getElementById('setting-chat-preprompt');
   if (chatPP)  chatPP.value  = settings.chatPrePrompt  ?? '';
   const csUrl = document.getElementById('setting-code-server-url');
-  if (csUrl) csUrl.value = settings.codeServerUrl ?? 'http://localhost:5001';
+  if (csUrl) csUrl.value = settings.codeServerUrl || CODE_SERVER_DEFAULT;
 
   const defAgentSel = document.getElementById('setting-default-agent');
   if (defAgentSel) {
@@ -209,7 +210,7 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
   settings.chatPrePrompt         = document.getElementById('setting-chat-preprompt')?.value  ?? '';
   settings.anthropicApiKey       = document.getElementById('setting-anthropic-key')?.value  ?? '';
   settings.openaiApiKey          = document.getElementById('setting-openai-key')?.value     ?? '';
-  settings.codeServerUrl         = document.getElementById('setting-code-server-url')?.value.trim() || 'http://localhost:5001';
+  settings.codeServerUrl         = document.getElementById('setting-code-server-url')?.value.trim() || CODE_SERVER_DEFAULT;
   settings.defaultAgentId        = document.getElementById('setting-default-agent')?.value || '';
   settings.defaultAgentIdFallback = document.getElementById('setting-default-agent-fallback')?.value || '';
   const btn = document.getElementById('save-settings-btn');
@@ -4264,7 +4265,7 @@ function switchCodeMode(mode) {
     vsPanel.style.display    = 'flex';
     monacoWrap.style.display = 'none';
     const frame = document.getElementById('code-server-frame');
-    if (!frame.getAttribute('src')) frame.src = settings.codeServerUrl || 'http://localhost:5001';
+    if (!frame.getAttribute('src')) frame.src = settings.codeServerUrl || CODE_SERVER_DEFAULT;
   } else {
     vsPanel.style.display    = 'none';
     monacoWrap.style.display = 'flex';

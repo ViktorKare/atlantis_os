@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 Environment=PATH=/home/viktor/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/bin/sh -c 'exec code-server --bind-addr 127.0.0.1:5001 --auth none'
+ExecStart=/bin/sh -c 'exec code-server --bind-addr 0.0.0.0:5001 --auth none'
 Restart=on-failure
 RestartSec=3
 StandardOutput=journal
