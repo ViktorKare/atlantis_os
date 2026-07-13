@@ -1335,7 +1335,6 @@ async function executeTool(name, params) {
       default: {
         if (SERVER_TOOLS.has(name)) {
           const r = await api('POST', '/api/tools/exec', { name, args: params || {} });
-          if (name === 'edit_file') renderFileTree();
           return typeof r === 'string' ? r : JSON.stringify(r, null, 2);
         }
         return `Unknown tool: ${name}`;
