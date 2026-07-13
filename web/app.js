@@ -1312,16 +1312,11 @@ async function executeTool(name, params) {
       case 'read_file': {
         const r = await api('GET', `/api/fs/read?path=${encodeURIComponent(params.path || '')}`);
         if (r.error) return `Error: ${r.error}`;
-        // Refresh editor if this file is open
-        if (codeSession?.activeFile === params.path) refreshMonacoContent(r.content);
         return r.content ?? '';
       }
       case 'write_file': {
         const r = await api('POST', '/api/fs/write', { path: params.path, content: params.content ?? '' });
         if (r.error) return `Error: ${r.error}`;
-        if (codeSession?.openFiles?.includes(params.path)) refreshMonacoContent(params.content);
-        if (codeSession?.activeFile === params.path) refreshMonacoContent(params.content ?? '');
-        renderFileTree();
         return `Written: ${params.path}`;
       }
       case 'list_dir': {
@@ -4415,24 +4410,18 @@ async function loadBrainPanel() {
 
 // ── Code ──────────────────────────────────────────────────────────────────────
 
-let codeSession  = null;
-let monacoEditor = null;
-let codeAutoAccept = false;
-let codeAbort    = null;
-let codeBusy     = false;
-
 function switchCodeMode(mode) {
-  const vsPanel   = document.getElementById('code-vscode-panel');
-  const monacoWrap = document.getElementById('code-monaco-wrap');
+  const vsPanel    = document.getElementById('code-vscode-panel');
+  const editorWrap = document.getElementById('code-editor-wrap');
   document.querySelectorAll('.code-mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
   if (mode === 'vscode') {
     vsPanel.style.display    = 'flex';
-    monacoWrap.style.display = 'none';
+    editorWrap.style.display = 'none';
     const frame = document.getElementById('code-server-frame');
     if (!frame.getAttribute('src')) frame.src = settings.codeServerUrl || CODE_SERVER_DEFAULT;
   } else {
     vsPanel.style.display    = 'none';
-    monacoWrap.style.display = 'flex';
+    editorWrap.style.display = 'flex';
   }
 }
 
@@ -4440,390 +4429,14 @@ document.querySelectorAll('.code-mode-btn').forEach(btn => {
   btn.addEventListener('click', () => switchCodeMode(btn.dataset.mode));
 });
 
-async function initCode() {
-  switchCodeMode('monaco');
-  await loadCodeSession();
-  refreshCodeSelects();
-  initMonaco();
-  renderFileTree();
+let codeModuleInited = false;
+function initCode() {
+  switchCodeMode('editor');
+  if (codeModuleInited) return;
+  codeModuleInited = true;
+  window.CodeEditorApp?.initCode();
 }
 
-async function loadCodeSession() {
-  try {
-    const s = await api('GET', '/api/code-session');
-    codeSession = { root_path: '/home/viktor/library/projects', open_files: [], active_file: null, ...s };
-    if (typeof codeSession.open_files === 'string') codeSession.open_files = JSON.parse(codeSession.open_files || '[]');
-  } catch (_) {
-    codeSession = { root_path: '/home/viktor/library/projects', open_files: [], active_file: null };
-  }
-  const lbl = document.getElementById('code-root-label');
-  if (lbl) { lbl.textContent = codeSession.root_path.split('/').pop() || '/'; lbl.title = codeSession.root_path; }
-  renderCodeTabs();
-}
-
-function saveCodeSession() {
-  if (!codeSession) return;
-  api('PUT', '/api/code-session', {
-    rootPath:   codeSession.root_path,
-    openFiles:  codeSession.open_files || [],
-    activeFile: codeSession.active_file || null,
-  }).catch(() => {});
-}
-
-function initMonaco() {
-  if (monacoEditor) {
-    if (codeSession?.active_file) _monacoOpenFile(codeSession.active_file);
-    return;
-  }
-  if (!window.require) return;
-  require(['vs/editor/editor.main'], () => {
-    monaco.editor.defineTheme('app-dark', {
-      base: 'vs-dark', inherit: true, rules: [],
-      colors: { 'editor.background': '#141414', 'editor.lineHighlightBackground': '#1c1c1c' },
-    });
-    monacoEditor = monaco.editor.create(document.getElementById('monaco-container'), {
-      value: '', language: 'plaintext', theme: 'app-dark',
-      fontSize: 13, fontFamily: "'Fira Code','Cascadia Code',Consolas,monospace",
-      minimap: { enabled: false }, scrollBeyondLastLine: false,
-      wordWrap: 'off', automaticLayout: true, renderLineHighlight: 'line',
-    });
-    monacoEditor.onDidChangeCursorPosition(() => {
-      const p = monacoEditor.getPosition();
-      const lbl = document.getElementById('code-pos-label');
-      if (lbl) lbl.textContent = `Ln ${p.lineNumber}, Col ${p.column}`;
-    });
-    monacoEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveCurrentFile);
-    if (codeSession?.active_file) _monacoOpenFile(codeSession.active_file);
-  });
-}
-
-async function _monacoOpenFile(path) {
-  try {
-    const r = await api('GET', `/api/fs/read?path=${encodeURIComponent(path)}`);
-    if (r.error || !monacoEditor) return;
-    const lang = detectLang(path);
-    monacoEditor.setModel(monaco.editor.createModel(r.content ?? '', lang));
-    const lbl = document.getElementById('code-lang-label');
-    if (lbl) lbl.textContent = lang;
-  } catch (_) {}
-}
-
-function refreshMonacoContent(content) {
-  if (!monacoEditor) return;
-  const pos = monacoEditor.getPosition();
-  monacoEditor.setValue(content ?? '');
-  if (pos) monacoEditor.setPosition(pos);
-}
-
-function detectLang(path) {
-  const ext = (path || '').split('.').pop().toLowerCase();
-  return { js:'javascript', ts:'typescript', tsx:'typescript', jsx:'javascript',
-    py:'python', html:'html', css:'css', json:'json', md:'markdown',
-    sh:'shell', bash:'shell', yml:'yaml', yaml:'yaml', toml:'ini',
-    rs:'rust', go:'go', cpp:'cpp', c:'c', java:'java', rb:'ruby',
-    php:'php', sql:'sql', xml:'xml', txt:'plaintext' }[ext] || 'plaintext';
-}
-
-function renderCodeTabs() {
-  const bar = document.getElementById('code-tabs');
-  if (!bar) return;
-  const files = codeSession?.open_files || [];
-  bar.innerHTML = files.map(f => {
-    const name = f.split('/').pop();
-    const active = f === codeSession?.active_file;
-    return `<div class="code-tab${active ? ' active' : ''}" data-path="${escHtml(f)}" title="${escHtml(f)}">
-      <span class="code-tab-name">${escHtml(name)}</span>
-      <button class="code-tab-close" data-path="${escHtml(f)}">×</button>
-    </div>`;
-  }).join('');
-  bar.querySelectorAll('.code-tab').forEach(el =>
-    el.addEventListener('click', e => { if (!e.target.closest('.code-tab-close')) openCodeFile(el.dataset.path); })
-  );
-  bar.querySelectorAll('.code-tab-close').forEach(el =>
-    el.addEventListener('click', e => { e.stopPropagation(); closeCodeTab(el.dataset.path); })
-  );
-}
-
-async function openCodeFile(path) {
-  if (!codeSession) return;
-  if (!codeSession.open_files) codeSession.open_files = [];
-  if (!codeSession.open_files.includes(path)) codeSession.open_files.push(path);
-  codeSession.active_file = path;
-  renderCodeTabs();
-  saveCodeSession();
-  await _monacoOpenFile(path);
-}
-
-function closeCodeTab(path) {
-  if (!codeSession) return;
-  codeSession.open_files = (codeSession.open_files || []).filter(f => f !== path);
-  if (codeSession.active_file === path) {
-    codeSession.active_file = codeSession.open_files[codeSession.open_files.length - 1] || null;
-  }
-  renderCodeTabs();
-  if (codeSession.active_file) openCodeFile(codeSession.active_file);
-  else if (monacoEditor) monacoEditor.setValue('');
-  saveCodeSession();
-}
-
-async function saveCurrentFile() {
-  if (!codeSession?.active_file || !monacoEditor) return;
-  const r = await api('POST', '/api/fs/write', { path: codeSession.active_file, content: monacoEditor.getValue() });
-  if (r?.error) appendCodeBubble('system', `Save failed: ${r.error}`);
-}
-
-async function renderFileTree() {
-  const root = codeSession?.root_path || '/home/viktor/library/projects';
-  const el = document.getElementById('code-tree');
-  if (!el) return;
-  el.innerHTML = '';
-  await _renderTreeLevel(el, root, true);
-}
-
-async function _renderTreeLevel(container, dirPath, expand) {
-  try {
-    const r = await api('GET', `/api/fs?path=${encodeURIComponent(dirPath)}`);
-    if (r.error) { container.textContent = r.error; return; }
-    const entries = [...(r.entries || [])].sort((a, b) => {
-      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-    const ul = document.createElement('ul');
-    ul.className = 'tree-list';
-    for (const entry of entries) {
-      const fullPath = dirPath.replace(/\/$/, '') + '/' + entry.name;
-      const li = document.createElement('li');
-      li.className = `tree-item tree-${entry.type}`;
-      const row = document.createElement('div');
-      row.className = 'tree-row';
-      const icon = document.createElement('span');
-      icon.className = 'tree-icon';
-      icon.textContent = entry.type === 'dir' ? '▶' : '';
-      const label = document.createElement('span');
-      label.className = 'tree-label';
-      label.textContent = entry.name;
-      label.title = fullPath;
-      row.appendChild(icon);
-      row.appendChild(label);
-      li.appendChild(row);
-      if (entry.type === 'dir') {
-        let expanded = false;
-        row.addEventListener('click', async () => {
-          expanded = !expanded;
-          icon.textContent = expanded ? '▼' : '▶';
-          const existing = li.querySelector('.tree-list');
-          if (existing) { existing.remove(); return; }
-          await _renderTreeLevel(li, fullPath, false);
-        });
-      } else {
-        row.addEventListener('click', () => openCodeFile(fullPath));
-        row.addEventListener('dblclick', () => openCodeFile(fullPath));
-      }
-      ul.appendChild(li);
-    }
-    container.appendChild(ul);
-  } catch (e) {
-    container.textContent = e.message;
-  }
-}
-
-function refreshCodeSelects() {
-  const modelSel = document.getElementById('code-model-select');
-  const agentSel = document.getElementById('code-agent-select');
-  if (modelSel) modelSel.innerHTML = models.map(m =>
-    `<option value="${escHtml(m)}"${m === state.model ? ' selected' : ''}>${escHtml(m)}</option>`
-  ).join('');
-  if (agentSel) agentSel.innerHTML = '<option value="">No agent</option>' + agents.map(a =>
-    `<option value="${a.id}">${escHtml(a.name)}</option>`
-  ).join('');
-}
-
-function appendCodeBubble(role, content) {
-  const win = document.getElementById('code-chat-window');
-  if (!win) return null;
-  const div = document.createElement('div');
-  div.className = `message ${role}`;
-  div.innerHTML = role === 'user' ? `<p>${escHtml(content)}</p>` : marked.parse(content);
-  win.appendChild(div);
-  win.scrollTop = win.scrollHeight;
-  if (role === 'assistant') div.querySelectorAll('pre code').forEach(b => Prism.highlightElement(b));
-  return div;
-}
-
-async function buildCodeContext() {
-  const files = codeSession?.open_files || [];
-  if (!files.length) return 'No files are currently open.';
-  const parts = ['You are a coding assistant with access to the user\'s open files.\n'];
-  for (const path of files) {
-    try {
-      const r = await api('GET', `/api/fs/read?path=${encodeURIComponent(path)}`);
-      if (!r.error) parts.push(`### ${path}\n\`\`\`${detectLang(path)}\n${r.content}\n\`\`\``);
-    } catch (_) {}
-  }
-  if (codeSession?.active_file) parts.push(`\nCurrently active: ${codeSession.active_file}`);
-  parts.push(`Project root: ${codeSession?.root_path || ''}`);
-  return parts.join('\n');
-}
-
-async function sendCodeMessage() {
-  if (codeBusy) return;
-  const input = document.getElementById('code-chat-input');
-  const text = input.value.trim();
-  if (!text) return;
-  input.value = '';
-  input.style.height = 'auto';
-  codeBusy = true;
-  document.getElementById('code-send-btn').disabled = true;
-
-  const win = document.getElementById('code-chat-window');
-  appendCodeBubble('user', text);
-
-  const agentId = document.getElementById('code-agent-select')?.value;
-  const agent   = agents.find(a => a.id === agentId) || null;
-  const model   = document.getElementById('code-model-select')?.value || state.model || models[0] || 'llama3.1:8b';
-  const toolPerms = agent?.tools && Object.values(agent.tools).some(Boolean)
-    ? agent.tools : { files: true, web: false };
-
-  const codeCtx  = await buildCodeContext();
-  const manifest = buildToolManifest(toolPerms);
-  const sysParts = [codeCtx, agent?.systemPrompt, manifest].filter(Boolean);
-  const tools    = buildTools(toolPerms);
-  const messages = [
-    { role: 'system', content: sysParts.join('\n\n') },
-    { role: 'user',   content: text },
-  ];
-
-  let assistantDiv = null;
-  let fullText = '';
-
-  const doStream = async (msgs) => {
-    assistantDiv = appendCodeBubble('assistant', '▋');
-    fullText = '';
-    codeAbort = new AbortController();
-    const sendModel = (agent && agent.fallbackModel) ? pickModel(agent, await currentCapacity()) : model;
-    const body = { model: sendModel, messages: msgs, stream: true, options: {} };
-    if (tools.length) body.tools = tools;
-    if (agent?.temperature != null) body.options.temperature = agent.temperature;
-    if (agent?.topP        != null) body.options.top_p       = agent.topP;
-    if (agent?.contextLen)          body.options.num_ctx     = agent.contextLen;
-
-    const resp = await fetch(`${await resolveOllama()}/api/chat`, {
-      method: 'POST', body: JSON.stringify(body), signal: codeAbort.signal,
-    });
-    const reader = resp.body.getReader();
-    const dec = new TextDecoder();
-    let pendingToolCalls = [];
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      for (const line of dec.decode(value, { stream: true }).split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          const chunk = JSON.parse(line);
-          if (chunk.message?.tool_calls?.length) {
-            pendingToolCalls.push(...chunk.message.tool_calls);
-          } else if (chunk.message?.content) {
-            fullText += chunk.message.content;
-            assistantDiv.innerHTML = marked.parse(fullText + (chunk.done ? '' : ' ▋'));
-            assistantDiv.querySelectorAll('pre code').forEach(b => Prism.highlightElement(b));
-            win.scrollTop = win.scrollHeight;
-          }
-        } catch (_) {}
-      }
-    }
-
-    if (pendingToolCalls.length) {
-      renderToolCallBubble(win, pendingToolCalls);
-      const toolMsgs = [];
-      for (const tc of pendingToolCalls) {
-        const name   = tc.function?.name;
-        const params = tc.function?.arguments ?? tc.function?.parameters ?? {};
-        const result = await executeTool(name, params);
-        renderToolResultBubble(win, name, result);
-        toolMsgs.push({ role: 'tool', content: String(result) });
-      }
-      return [...msgs, { role: 'assistant', content: '', tool_calls: pendingToolCalls }, ...toolMsgs];
-    }
-
-    if (fullText.includes('```action')) {
-      const matches = [...fullText.matchAll(/```action\s*([\s\S]*?)```/g)];
-      for (const m of matches) {
-        try {
-          const parsed = JSON.parse(m[1].trim());
-          const result = await executeTool(parsed.tool, parsed.params || {});
-          renderToolResultBubble(win, parsed.tool, result);
-          msgs = [...msgs, { role: 'user', content: `Tool result for ${parsed.tool}:\n${result}` }];
-        } catch (_) {}
-      }
-    }
-    return null;
-  };
-
-  try {
-    let msgs = messages;
-    for (let i = 0; i < 6; i++) {
-      const cont = await doStream(msgs);
-      if (!cont) break;
-      msgs = cont;
-    }
-    if (assistantDiv) {
-      assistantDiv.innerHTML = marked.parse(fullText || '(no response)');
-      assistantDiv.querySelectorAll('pre code').forEach(b => Prism.highlightElement(b));
-    }
-  } catch (e) {
-    if (e.name !== 'AbortError') appendCodeBubble('system', `Error: ${e.message}`);
-  } finally {
-    codeBusy = false;
-    document.getElementById('code-send-btn').disabled = false;
-    codeAbort = null;
-  }
-}
-
-// Code tab event listeners
-document.getElementById('code-send-btn').addEventListener('click', sendCodeMessage);
-document.getElementById('code-chat-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendCodeMessage(); }
-});
-document.getElementById('code-chat-input').addEventListener('input', e => {
-  e.target.style.height = 'auto';
-  e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
-});
-document.getElementById('code-auto-btn').addEventListener('click', () => {
-  codeAutoAccept = !codeAutoAccept;
-  const btn = document.getElementById('code-auto-btn');
-  btn.title = `Auto-apply file edits (${codeAutoAccept ? 'on' : 'off'})`;
-  btn.classList.toggle('active', codeAutoAccept);
-});
-document.getElementById('code-root-btn').addEventListener('click', () => {
-  const newRoot = prompt('Set project root path:', codeSession?.root_path || '/home/viktor/library/projects');
-  if (!newRoot?.trim()) return;
-  if (!codeSession) codeSession = { open_files: [], active_file: null };
-  codeSession.root_path = newRoot.trim();
-  const lbl = document.getElementById('code-root-label');
-  if (lbl) { lbl.textContent = codeSession.root_path.split('/').pop() || '/'; lbl.title = codeSession.root_path; }
-  saveCodeSession();
-  renderFileTree();
-});
-document.getElementById('code-new-file-btn').addEventListener('click', async () => {
-  const root = codeSession?.root_path || '/home/viktor/library/projects';
-  const name = prompt('New file name (relative to root):');
-  if (!name?.trim()) return;
-  const path = root.replace(/\/$/, '') + '/' + name.trim();
-  const r = await api('POST', '/api/fs/write', { path, content: '' });
-  if (r?.error) { alert(r.error); return; }
-  renderFileTree();
-  openCodeFile(path);
-});
-document.getElementById('code-new-dir-btn').addEventListener('click', async () => {
-  const root = codeSession?.root_path || '/home/viktor/library/projects';
-  const name = prompt('New folder name (relative to root):');
-  if (!name?.trim()) return;
-  const path = root.replace(/\/$/, '') + '/' + name.trim();
-  const r = await api('POST', '/api/fs/mkdir', { path });
-  if (r?.error) { alert(r.error); return; }
-  renderFileTree();
-});
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {

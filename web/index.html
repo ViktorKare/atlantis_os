@@ -6,6 +6,7 @@
   <title>Atlantis OS</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1/themes/prism-tomorrow.css">
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="code/code.css">
   <link rel="icon" type="image/x-icon" href="/favicon.ico">
 </head>
 <body>
@@ -376,45 +377,34 @@
     <!-- ── Code ──────────────────────────────────────────────── -->
     <div id="section-code" class="section">
       <div id="code-mode-bar">
-        <button class="code-mode-btn active" data-mode="monaco">Monaco</button>
+        <button class="code-mode-btn active" data-mode="editor">Editor</button>
         <button class="code-mode-btn" data-mode="vscode">VS Code</button>
       </div>
       <div id="code-vscode-panel">
         <iframe id="code-server-frame" allow="clipboard-read; clipboard-write" allowfullscreen></iframe>
       </div>
-      <div id="code-monaco-wrap">
-      <div id="code-chat-panel">
-        <div id="code-chat-toolbar">
-          <select id="code-model-select"></select>
-          <select id="code-agent-select"><option value="">No agent</option></select>
-          <button id="code-auto-btn" title="Auto-apply file edits (off)">⚡ Auto</button>
+      <div id="code-editor-wrap">
+        <div id="code-backdrop"></div>
+        <div id="code-pane-row-scroll">
+          <div id="code-pane-row"></div>
         </div>
-        <div id="code-chat-window"></div>
-        <div id="code-chat-bar">
-          <div class="spin-wrap"><textarea id="code-chat-input" placeholder="Ask about the code…" rows="1"></textarea></div>
-          <button id="code-send-btn">Send</button>
+        <div id="code-tree-edge-control" class="hidden">
+          <span id="code-tree-edge-width">240px</span>
+          <button id="code-tree-edge-minus" title="Narrower">–</button>
+          <button id="code-tree-edge-plus" title="Wider">+</button>
+          <button id="code-tree-edge-show">Show tree</button>
         </div>
-      </div>
-      <div id="code-editor-panel">
-        <div id="code-tabs"></div>
-        <div id="monaco-container"></div>
-        <div id="code-editor-statusbar">
-          <span id="code-lang-label">plaintext</span>
-          <span id="code-pos-label">Ln 1, Col 1</span>
+        <div id="code-layout-bar">
+          <div id="code-layout-chips"></div>
+          <button id="code-layout-save-btn">+ Save layout</button>
         </div>
-      </div>
-      <div id="code-tree-panel">
-        <div id="code-tree-header">
-          <span id="code-root-label" title="Click to change root">project</span>
-          <div class="code-tree-actions">
-            <button id="code-new-file-btn" title="New file">+</button>
-            <button id="code-new-dir-btn"  title="New folder">⊕</button>
-            <button id="code-root-btn"     title="Change root">⋯</button>
+        <div id="code-palette-overlay" class="hidden">
+          <div id="code-palette-card">
+            <input id="code-palette-input" placeholder="Type a command…" autocomplete="off">
+            <div id="code-palette-list"></div>
           </div>
         </div>
-        <div id="code-tree"></div>
       </div>
-      </div><!-- /#code-monaco-wrap -->
     </div>
 
     <!-- ── Debug ─────────────────────────────────────────────── -->
@@ -658,14 +648,6 @@
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-json.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-sql.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1/components/prism-markup.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
-  <script>
-    require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' } });
-    window.MonacoEnvironment = { getWorkerUrl: () => URL.createObjectURL(new Blob([`
-      self.MonacoEnvironment = { baseUrl: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/' };
-      importScripts('https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/base/worker/workerMain.js');
-    `], { type: 'text/javascript' })) };
-  </script>
   <div id="welcome-overlay" class="welcome-overlay" hidden>
     <div class="welcome-card">
       <h2>Welcome to Atlantis OS</h2>
@@ -679,5 +661,6 @@
     </div>
   </div>
   <script src="app.js"></script>
+  <script type="module" src="code/panes.js"></script>
 </body>
 </html>
