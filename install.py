@@ -307,6 +307,12 @@ def main():
     if ask('Auto-install Ollama?', default_yes=True):
         setup_ollama(os_name)
 
+    if ask('Auto-generate an HTTPS cert?', default_yes=True):
+        setup_https_certs(os_name)
+
+    if ask('Auto-install code-server (in-browser code editor)?', default_yes=True):
+        setup_code_server(os_name)
+
     print('\nAtlantis is installed. Start it anytime by double-clicking')
     print('start.bat/start.command/start.sh in this folder — it opens')
     print('http://localhost:5000. stop.* and restart.* work the same way.\n')
