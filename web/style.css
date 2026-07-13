@@ -3933,6 +3933,8 @@ button:not(:disabled):active {
   backdrop-filter: blur(4px);
 }
 
+.welcome-overlay[hidden] { display: none; }
+
 .welcome-card {
   background: var(--surface);
   border: 1px solid var(--border);
