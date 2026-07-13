@@ -85,7 +85,11 @@ directly, not just the in-app setting.
 (and, on Linux only, a no-root Ollama at `data/ollama/bin/ollama` — started
 via `ollama serve` with `OLLAMA_MODELS` pointed at `data/ollama/models`, but
 only if that binary exists and port 11434 isn't already answering, so it
-never fights a system-installed Ollama). Two modes:
+never fights a system-installed Ollama). On macOS/Linux it also supervises
+`code-server` (skipped on Windows) at `data/code-server/bin/code-server`
+(falling back to a PATH lookup), bound to `0.0.0.0:5001` with
+`--auth none`, adding `--cert`/`--cert-key` pointed at
+`data/certs/cert.pem`/`key.pem` when both exist. Two modes:
 
 - **Supervisor mode** (`python3 launcher.py`, no args) — the blocking loop
   used by autostart entries (launchd plist / systemd user unit / Windows
@@ -135,8 +139,19 @@ bootstrap launchers below. Flow:
      installs, with a message to retry from Settings later.
    - After install, polls `127.0.0.1:11434` for up to 20s to confirm Ollama
      came up.
-4. Explains the manual `start`/`stop`/`restart` wrapper scripts.
-5. Asks whether to auto-start on login (default yes); if so, registers:
+4. Asks to auto-generate an HTTPS cert (default yes); skipped on Windows or
+   if `openssl` isn't on `PATH`. Otherwise shells out to `openssl req -x509`
+   to write `data/certs/cert.pem`/`key.pem`, with a `subjectAltName`
+   covering `localhost`, `127.0.0.1`, and the machine's LAN IPv4 addresses
+   (gathered the same UDP-connect-trick way `server.py`'s `local_ips()`
+   does). Both `server.py` (already) and `launcher.py`'s code-server
+   supervision (below) pick these up automatically if present.
+5. Asks to auto-install code-server (default yes); skipped on Windows
+   (official support there is WSL-only). Otherwise installs it standalone,
+   no root, via code-server's own install script with
+   `--method=standalone --prefix=data/code-server`.
+6. Explains the manual `start`/`stop`/`restart` wrapper scripts.
+7. Asks whether to auto-start on login (default yes); if so, registers:
    - **macOS** — a `launchd` plist (`~/Library/LaunchAgents/com.atlantis.launcher.plist`,
      `RunAtLoad=true`, `KeepAlive=false`), loaded via `launchctl load`.
    - **Linux** — a systemd user unit (`~/.config/systemd/user/atlantis-launcher.service`,
@@ -148,12 +163,12 @@ bootstrap launchers below. Flow:
      running with `/RL LIMITED` (no elevation).
    - Registration failures are caught and non-fatal, with a pointer back to
      the manual start scripts.
-6. Writes `data/` and `atlantis.config.json` (`{"port": 5000, "root_path": ...}`).
-7. Imports `server/server.py` directly (`sys.path.insert(0, .../server); import
+8. Writes `data/` and `atlantis.config.json` (`{"port": 5000, "root_path": ...}`).
+9. Imports `server/server.py` directly (`sys.path.insert(0, .../server); import
    server as server_module`) and calls `server_module.init_db()` to create the
    schema before first launch, without going through HTTP.
-8. Starts `launcher.py` detached (`start_new_session` on POSIX; plain `Popen`
-   on Windows) and prints the closing message with the configured port.
+10. Starts `launcher.py` detached (`start_new_session` on POSIX; plain `Popen`
+    on Windows) and prints the closing message with the configured port.
 
 **Bootstrap launchers** (repo root) — `install.sh` (Linux), `install.command`
 (macOS), `install.bat` (Windows) — each checks for a usable Python before
@@ -741,6 +756,17 @@ POST /api/system/stop       no body → {ok: true}
     by launcher.py only if that binary exists and 11434 isn't already taken
   - _fs_safe()/_pipe_path_safe() fence file access to Path.home(), not a
     hardcoded /home — portability requirement once macOS/Windows were in scope
+  - HTTPS/certs are back in scope for install.py (supersedes the prior
+    "dropped for friend installs" decision) — self-signed, installer-
+    generated, best-effort; a failure just means plain HTTP, never blocks
+    install
+  - code-server is installed/supervised by install.py/launcher.py
+    (standalone, no-root, under data/code-server/), replacing the
+    superseded deploy/legacy/atlantis-code-server.service as the actual
+    running mechanism; deploy/legacy/ itself is left untouched as reference
+  - Both HTTPS cert generation and code-server are skipped entirely on
+    Windows (no bundled openssl; code-server's official Windows support is
+    WSL-only) rather than partially supported
 
 ---
 
