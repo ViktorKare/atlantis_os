@@ -77,6 +77,7 @@ def get_db():
         conn.close()
 
 def init_db():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     with get_db() as db:
         db.executescript('''
             CREATE TABLE IF NOT EXISTS settings (
@@ -2156,6 +2157,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _tools_exec(self, body):
         """Execute one agent tool server-side for the chat UI. Shares the
         implementation (and path sandbox) with the pipeline worker."""
+        sys.path.insert(0, str(ROOT_DIR / 'agent'))
         import worker as agent_tools
         name = (body or {}).get('name', '')
         args = (body or {}).get('args') or {}

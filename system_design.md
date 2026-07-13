@@ -73,6 +73,11 @@ file authoritative and the DB row a synced cache of it — this is what the
 Code Editor's `_fs_root()` reads. `agent/worker.py` does **not** read
 `atlantis.config.json` directly; it only ever sees `root_path` via the DB,
 so server/server.py is the single writer that keeps the two in sync.
+Because of this mirror-on-boot, changing the workspace root via the Code
+Editor UI (`PUT /api/code-session`) only changes the DB row and is silently
+overwritten by the JSON file's value on the next server restart — a user who
+wants a permanent workspace root change must edit `atlantis.config.json`
+directly, not just the in-app setting.
 
 ### Installer & process supervision
 
@@ -200,6 +205,12 @@ POST /api/system/stop       no body → {ok: true}
      leftover `.new` staging directories.
   - Never touches `data/` — an update only ever replaces code directories,
     never the database or other user data.
+  - Note: the stage-then-swap protects against a mid-*copy* failure, but the
+    swap phase itself (`rmtree` old dir, `rename` staging dir over it, done
+    sequentially per directory) is not atomic across all three directories —
+    if the swap step fails partway (e.g. a file-in-use error on Windows), a
+    mixed-version install is possible. Accepted as best-effort for a
+    single-user home app; not worth the complexity of a full rollback.
 
 ### Layout
 
