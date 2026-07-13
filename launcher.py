@@ -2,7 +2,7 @@
 """Atlantis OS — process supervisor. Run with: python3 launcher.py
 Control mode: python3 launcher.py --start | --stop | --restart
 """
-import json, os, signal, socket, subprocess, sys, time
+import json, os, shutil, signal, socket, subprocess, sys, time
 from pathlib import Path
 
 ROOT_DIR     = Path(__file__).parent
@@ -14,6 +14,10 @@ STOP_FLAG    = DATA_DIR / '.stop'
 LOG_FILE     = DATA_DIR / 'launcher.log'
 OLLAMA_DIR   = DATA_DIR / 'ollama'
 OLLAMA_BIN   = OLLAMA_DIR / 'bin' / 'ollama'
+CODE_SERVER_DIR = DATA_DIR / 'code-server'
+CODE_SERVER_BIN = CODE_SERVER_DIR / 'bin' / 'code-server'
+CERT_FILE       = DATA_DIR / 'certs' / 'cert.pem'
+KEY_FILE        = DATA_DIR / 'certs' / 'key.pem'
 
 _children = {}
 
@@ -65,6 +69,16 @@ def spawn_detached(args):
     return subprocess.Popen(args, **kwargs)
 
 
+def code_server_cmd():
+    bin_path = str(CODE_SERVER_BIN) if CODE_SERVER_BIN.exists() else shutil.which('code-server')
+    if not bin_path:
+        return None
+    cmd = [bin_path, '--bind-addr', '0.0.0.0:5001', '--auth', 'none']
+    if CERT_FILE.exists() and KEY_FILE.exists():
+        cmd += ['--cert', str(CERT_FILE), '--cert-key', str(KEY_FILE)]
+    return cmd
+
+
 def start_children():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     log = open(LOG_FILE, 'a')
@@ -79,6 +93,10 @@ def start_children():
         env['OLLAMA_MODELS'] = str(OLLAMA_DIR / 'models')
         _children['ollama'] = subprocess.Popen(
             [str(OLLAMA_BIN), 'serve'], stdout=log, stderr=log, env=env)
+    if sys.platform != 'win32':
+        cmd = code_server_cmd()
+        if cmd and not port_open('127.0.0.1', 5001):
+            _children['code_server'] = subprocess.Popen(cmd, stdout=log, stderr=log)
 
 
 def stop_children():
@@ -114,6 +132,10 @@ def restart_dead_children():
                 env['OLLAMA_MODELS'] = str(OLLAMA_DIR / 'models')
                 _children[name] = subprocess.Popen(
                     [str(OLLAMA_BIN), 'serve'], stdout=log, stderr=log, env=env)
+            elif name == 'code_server':
+                cmd = code_server_cmd()
+                if cmd:
+                    _children[name] = subprocess.Popen(cmd, stdout=log, stderr=log)
 
 
 def run_supervisor():
