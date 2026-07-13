@@ -68,7 +68,7 @@ let state    = { threads: [], activeId: null, model: '', selectedAgentId: null }
 let models   = [];
 let agents   = [];
 let tasks    = [];
-const CODE_SERVER_DEFAULT = `http://${location.hostname}:5001`; // code-server always runs on the same host as this app
+const CODE_SERVER_DEFAULT = `${location.protocol}//${location.hostname}:5001`; // code-server always runs on the same host as this app
 let settings = { endpoint: OLLAMA, showTokenStats: true, showThinking: true, timeoutHours: 5, pipelineManagerModel: '', pipelineMaxRetries: 3, brainPrePrompt: '', agentPrePrompt: '', chatPrePrompt: '', codeServerUrl: CODE_SERVER_DEFAULT, defaultAgentId: '', defaultAgentIdFallback: '' };
 
 let abortController = null;
