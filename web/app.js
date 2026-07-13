@@ -4849,6 +4849,7 @@ function maybeShowWelcomeOverlay() {
 
 document.getElementById('welcome-dismiss-btn').addEventListener('click', async () => {
   settings.userName = document.getElementById('welcome-name-input').value.trim();
+  homeGreeting.textContent = homeGreetingText();
   settings.welcomeDismissed = true;
   document.getElementById('welcome-overlay').hidden = true;
   await api('POST', '/api/settings', { welcomeDismissed: true, userName: settings.userName }).catch(() => {});
