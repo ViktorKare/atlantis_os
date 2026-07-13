@@ -4,18 +4,202 @@
 
 ## 1. Current State
 
-A single-page vanilla HTML/CSS/JS app served via `python3 server.py` (port 5000).
-All state lives in SQLite (`data.db`, WAL mode). No build step.
-A separate `worker.py` daemon executes pipeline jobs in the background.
+A single-page vanilla HTML/CSS/JS app served via `python3 server/server.py` (port 5000,
+configurable — see "atlantis.config.json" below).
+All state lives in SQLite (`data/data.db`, WAL mode). No build step.
+A separate `agent/worker.py` daemon executes pipeline jobs in the background.
+Both are supervised by `launcher.py`, installed by `install.py` — see
+"Installer & process supervision" below for the full cross-platform packaging story.
 
 ### Process layout
 
 ```
-python3 server.py    # HTTP API + SSE streaming, port 5000
-python3 worker.py    # Job daemon — polls jobs table, runs pipelines
+python3 launcher.py            # recommended: supervisor, starts + monitors both below
+python3 server/server.py       # HTTP API + SSE streaming, port 5000
+python3 agent/worker.py        # Job daemon — polls jobs table, runs pipelines
 ```
 
-Both started as systemd user services via `bash setup-services.sh`.
+End users start/stop/restart via `start.sh`/`stop.sh`/`restart.sh` (Linux),
+`start.command`/`stop.command`/`restart.command` (macOS), or
+`start.bat`/`stop.bat`/`restart.bat` (Windows) — each a one-line wrapper around
+`python3 launcher.py --start`/`--stop`/`--restart`. The previous single-host
+deployment (systemd user services via `bash deploy/legacy/setup-services.sh`)
+still exists under `deploy/legacy/` for reference but is superseded by
+`launcher.py` + the autostart entry `install.py` registers.
+
+### Directory layout
+
+```
+web/            — frontend: app.js, index.html, style.css, favicon.ico
+server/         — server.py (HTTP API)
+agent/          — worker.py (job daemon)
+deploy/legacy/  — pre-installer systemd deployment (four .service files,
+                  setup-services.sh, restart.sh, searxng-settings.yml)
+data/           — gitignored except .gitkeep: data.db, zone/, ollama/
+                  (no-root Linux Ollama install), certs/, launcher.pid,
+                  .restart / .stop flag files
+plans/          — .md plan files (unchanged, repo root)
+docs/           — unchanged, repo root
+launcher.py, install.py, atlantis.config.json, start/stop/restart.*,
+install.sh/.command/.bat, CLAUDE.md, system_design.md  — repo root
+```
+
+`web/`, `server/`, and `agent/` are exactly the three directories the in-app
+updater (`POST /api/system/update`) validates and replaces — see "In-app
+Update/Restart/Stop" below. `plans/`, `docs/`, `CLAUDE.md`, and
+`system_design.md` were not moved by the reorg.
+
+### atlantis.config.json
+
+Root-level, gitignored, schema `{"port": 5000, "root_path": "/home/alice"}`.
+Written once by `install.py` during first-time setup. `server/server.py`'s
+`load_config()` reads it at import time:
+
+```
+DEFAULT_CONFIG = {'port': 5000, 'root_path': str(Path.home())}
+```
+
+- File missing → defaults.
+- File present but not valid JSON, or valid JSON that isn't an object (e.g.
+  the file contains `42` or `"hello"`) → defaults (guard added after a bug
+  where a non-dict JSON value crashed the merge).
+- Otherwise, defaults are shallow-merged under the parsed dict, so a config
+  with only `{"port": 5001}` still gets a `root_path` default.
+
+`PORT` is read directly from the merged config at import time. `root_path` is
+different: it is written into the `code_sessions` table (`UPDATE code_sessions
+SET root_path=? WHERE id='default'`) on every server boot, making the JSON
+file authoritative and the DB row a synced cache of it — this is what the
+Code Editor's `_fs_root()` reads. `agent/worker.py` does **not** read
+`atlantis.config.json` directly; it only ever sees `root_path` via the DB,
+so server/server.py is the single writer that keeps the two in sync.
+
+### Installer & process supervision
+
+**`launcher.py`** (repo root) supervises `server/server.py` + `agent/worker.py`
+(and, on Linux only, a no-root Ollama at `data/ollama/bin/ollama` — started
+via `ollama serve` with `OLLAMA_MODELS` pointed at `data/ollama/models`, but
+only if that binary exists and port 11434 isn't already answering, so it
+never fights a system-installed Ollama). Two modes:
+
+- **Supervisor mode** (`python3 launcher.py`, no args) — the blocking loop
+  used by autostart entries (launchd plist / systemd user unit / Windows
+  Task Scheduler). Refuses to start a second instance if `data/launcher.pid`
+  names a live PID. On fresh start it clears any stale `data/.restart` /
+  `data/.stop` flag left over from an unclean prior death — otherwise a
+  leftover flag could immediately kill the children of a brand-new start.
+  Once running, it polls once a second: `.stop` → terminate children (10s
+  grace then kill) and idle until `.restart` reappears; `.restart` (not
+  stopped) → terminate + respawn immediately; otherwise, respawn any child
+  that died on its own (3s backoff, mirroring systemd's `RestartSec=3`).
+  SIGTERM is caught and treated like Ctrl-C (stops children, removes the PID
+  file, exits).
+- **Control mode** (`python3 launcher.py --start`/`--stop`/`--restart`) — a
+  short-lived CLI: `--stop`/`--restart` touch the flag files if a supervisor
+  is alive; `--start`, and `--restart` when nothing is alive, spawn a
+  detached fresh supervisor process instead. This is what the wrapper
+  scripts and the Settings "System" endpoints (below) invoke.
+
+Known accepted limitation (documented in a code comment, not fixed):
+`is_alive()` only checks PID existence (`os.kill(pid, 0)` / `tasklist` on
+Windows), not process identity, so a sufficiently rare PID-reuse collision
+could report a stale PID as "already running." A portable identity check
+isn't available in the stdlib across all three OSes, so this was accepted
+rather than solved.
+
+**`install.py`** (repo root) is the first-time setup wizard, run via the
+bootstrap launchers below. Flow:
+
+1. Print intro, detect OS (`Darwin`/`Windows`/`Linux` → `macos`/`windows`/`linux`).
+2. Ask for the workspace root path (default: the user's home folder).
+3. Ask to auto-install Ollama (default yes); skipped if something is already
+   answering on 11434, or (macOS) `Ollama.app` is already present:
+   - **macOS** — downloads the official `Ollama-darwin.zip`, unzips, moves
+     `Ollama.app` into `~/Applications`, opens it.
+   - **Windows** — downloads the official `OllamaSetup.exe`, runs it with
+     `/SILENT`.
+   - **Linux (no-root)** — downloads `ollama-linux-amd64.tar.zst` (**not**
+     `.tgz` — Ollama renamed their release asset; the plan originally
+     assumed `.tgz` and was corrected mid-implementation), shells out to a
+     system `zstd`/`unzstd` binary to decompress to a `.tar` (stdlib
+     `tarfile`/`zipfile` can't handle zstd), then extracts that tar with
+     stdlib `tarfile` into `data/ollama/`. If neither `zstd` nor `unzstd` is
+     on `PATH`, prints an apt/dnf hint and gives up cleanly rather than
+     failing the whole install.
+   - Any Ollama install failure is caught and non-fatal: Atlantis still
+     installs, with a message to retry from Settings later.
+   - After install, polls `127.0.0.1:11434` for up to 20s to confirm Ollama
+     came up.
+4. Explains the manual `start`/`stop`/`restart` wrapper scripts.
+5. Asks whether to auto-start on login (default yes); if so, registers:
+   - **macOS** — a `launchd` plist (`~/Library/LaunchAgents/com.atlantis.launcher.plist`,
+     `RunAtLoad=true`, `KeepAlive=false`), loaded via `launchctl load`.
+   - **Linux** — a systemd user unit (`~/.config/systemd/user/atlantis-launcher.service`,
+     `Restart=on-failure`, `RestartSec=3`) with a **double-quoted** `ExecStart`
+     (`ExecStart="{python}" "{launcher.py path}"` — added mid-implementation
+     because unquoted paths containing spaces broke unit parsing), enabled
+     via `systemctl --user enable --now`.
+   - **Windows** — a Task Scheduler entry (`schtasks /Create /SC ONLOGON`)
+     running with `/RL LIMITED` (no elevation).
+   - Registration failures are caught and non-fatal, with a pointer back to
+     the manual start scripts.
+6. Writes `data/` and `atlantis.config.json` (`{"port": 5000, "root_path": ...}`).
+7. Imports `server/server.py` directly (`sys.path.insert(0, .../server); import
+   server as server_module`) and calls `server_module.init_db()` to create the
+   schema before first launch, without going through HTTP.
+8. Starts `launcher.py` detached (`start_new_session` on POSIX; plain `Popen`
+   on Windows) and prints the closing message with the configured port.
+
+**Bootstrap launchers** (repo root) — `install.sh` (Linux), `install.command`
+(macOS), `install.bat` (Windows) — each checks for a usable Python before
+running `install.py`:
+- `install.sh` / `install.command`: check `command -v python3`; if missing,
+  print package-manager guidance (`apt`/`dnf` on Linux) or trigger
+  `xcode-select --install` on macOS (Xcode Command Line Tools bundle python3).
+- `install.bat`: tries `python3` then `python` on `PATH`; if neither is
+  found, downloads the official Python.org silent installer
+  (`python-3.12.7-amd64.exe /quiet InstallAllUsers=0 PrependPath=1`) via
+  PowerShell and asks the user to re-run `install.bat` afterward.
+
+### In-app Update/Restart/Stop
+
+Settings tab, "System" group. Three endpoints, all under `/api/system/`:
+
+```
+POST /api/system/update     body: raw zip bytes (not JSON — Content-Type
+                             without "json" in it, so _read_body() returns
+                             bytes) → {ok: true} | {error: "..."}
+POST /api/system/restart    no body → {ok: true}
+POST /api/system/stop       no body → {ok: true}
+```
+
+- **`/api/system/restart`** / **`/api/system/stop`** just touch
+  `data/.restart` / `data/.stop` — the same flag files `launcher.py`'s
+  supervisor loop polls once a second. The endpoint itself does no process
+  management; `launcher.py` does the actual work out-of-band.
+- **`/api/system/update`** takes the POST body as a zip file, extracts it to
+  a temp dir, and:
+  1. Rejects non-zip bodies (`400`, `{"error": "Not a valid zip file"}`).
+  2. Locates `server/server.py` inside the extracted tree (`rglob`) to find
+     the update's root, then requires all of `UPDATE_REQUIRED_PATHS =
+     ('web/index.html', 'server/server.py', 'agent/worker.py')` to exist
+     under it (`400` with which path is missing, otherwise) — this runs
+     *before* anything live is touched.
+  3. Stages each of `web/`, `server/`, `agent/` into sibling `<name>.new`
+     directories first (`shutil.copytree`), only after **all three** stagings
+     succeed does it swap them into place (`rmtree` the old dir, `rename` the
+     staging dir over it). This ordering means a mid-copy failure (e.g. disk
+     full) can never leave a live directory deleted with no replacement ready
+     — it was changed to this two-phase stage-then-swap after an earlier
+     version could brick an install partway through.
+  4. Touches `data/.restart` on success so `launcher.py` picks up the new
+     code on its next poll.
+  5. Any exception anywhere in the process is caught and returned as a clean
+     `500 {"error": "Update failed: ..."}` JSON response instead of a dropped
+     connection; the `finally` block always removes the temp dir and any
+     leftover `.new` staging directories.
+  - Never touches `data/` — an update only ever replaces code directories,
+    never the database or other user data.
 
 ### Layout
 
@@ -78,7 +262,7 @@ Both started as systemd user services via `bash setup-services.sh`.
   - Schedule field: Manual / Every day at [time] / Every week / Every month / Custom cron
   - "Run now": streams response, saves run to DB
   - Run log: last 50 runs per task
-  - Scheduler (background thread in server.py) fires due tasks
+  - Scheduler (background thread in server/server.py) fires due tasks
 
   **Plans**
   - Sidebar: lists .md files from plans/ directory
@@ -159,19 +343,57 @@ Both started as systemd user services via `bash setup-services.sh`.
   - API Keys: Anthropic (sk-ant-…), OpenAI (sk-…)
   - Pre-prompts: Brain / All agents / All chats
   - Export / Import / Clear data
+  - System group: Update (upload a release zip → POST /api/system/update),
+    Restart, Stop — see "In-app Update/Restart/Stop" above for the endpoint
+    contract; the UI side just POSTs and reports the JSON result
+
+  **Welcome overlay** (one-time, not a nav-rail section)
+  - Full-viewport overlay (`#welcome-overlay` in web/index.html, markup +
+    styling live alongside the section panels but shown independent of
+    `switchSection()`) introducing Atlantis and pointing new users at the
+    Models tab to install a model sized for their hardware
+  - Gated by `settings.welcomeDismissed`: `maybeShowWelcomeOverlay()` runs once
+    at startup and un-hides the overlay only if the flag is falsy; the "Got
+    it" button hides it and persists `{welcomeDismissed: true}` via the
+    existing generic `POST /api/settings` — no dedicated endpoint
 
 ### Files
 
   main/
-  ├── index.html                    — shell, nav rail, section panels, CDN tags
-  ├── style.css                     — dark-only theme, all section styles
-  ├── app.js                        — all frontend logic
-  ├── server.py                     — HTTP server + SQLite CRUD + scheduler + SSE
-  ├── worker.py                     — job daemon: pipeline executor, model router
-  ├── atlantis-server.service       — systemd user unit for server.py
-  ├── atlantis-worker.service       — systemd user unit for worker.py
-  ├── setup-services.sh             — install + enable both services
-  ├── data.db                       — SQLite database (WAL mode, auto-created)
+  ├── web/
+  │   ├── index.html                — shell, nav rail, section panels, CDN tags,
+  │   │                                welcome overlay markup
+  │   ├── style.css                 — dark-only theme, all section styles
+  │   ├── app.js                    — all frontend logic
+  │   └── favicon.ico
+  ├── server/
+  │   └── server.py                 — HTTP server + SQLite CRUD + scheduler + SSE +
+  │                                    atlantis.config.json loader + /api/system/*
+  ├── agent/
+  │   └── worker.py                 — job daemon: pipeline executor, model router
+  ├── deploy/legacy/                — pre-installer systemd deployment (kept for
+  │                                    reference, superseded by launcher.py/install.py)
+  │   ├── atlantis-server.service
+  │   ├── atlantis-worker.service
+  │   ├── atlantis-code-server.service
+  │   ├── atlantis-searxng.service
+  │   ├── setup-services.sh
+  │   ├── restart.sh
+  │   └── searxng-settings.yml
+  ├── data/                         — gitignored except .gitkeep
+  │   ├── data.db                   — SQLite database (WAL mode, auto-created)
+  │   ├── zone/
+  │   ├── ollama/                   — no-root Linux Ollama install (bin/, models/)
+  │   ├── certs/
+  │   ├── launcher.pid
+  │   └── .restart / .stop          — flag files launcher.py polls
+  ├── launcher.py                   — process supervisor
+  ├── install.py                    — first-time setup wizard
+  ├── atlantis.config.json          — gitignored: {port, root_path}
+  ├── start.sh / stop.sh / restart.sh            (Linux)
+  ├── start.command / stop.command / restart.command  (macOS)
+  ├── start.bat / stop.bat / restart.bat         (Windows)
+  ├── install.sh / install.command / install.bat — bootstrap launchers for install.py
   ├── plans/                        — .md plan files
   └── .claude/
 
@@ -312,6 +534,11 @@ Both started as systemd user services via `bash setup-services.sh`.
   GET  /api/code-session          active code session
   PUT  /api/code-session          update session
 
+  POST /api/system/update         body: raw zip bytes → stage+swap web/server/agent →
+                                  touch data/.restart → {ok:true} | {error}
+  POST /api/system/restart        touch data/.restart (launcher.py picks it up) → {ok:true}
+  POST /api/system/stop           touch data/.stop (launcher.py picks it up) → {ok:true}
+
   GET  /*                         static file serving
 
 ### Worker — pipeline execution flow
@@ -334,7 +561,7 @@ Both started as systemd user services via `bash setup-services.sh`.
         iteration+1, drop their handover entries, jump the counter back
      f. On fail: retry up to max_retries, then pause or skip
   5. Write NDJSON events to jobs.output_log throughout
-  6. server.py /api/jobs/:id/stream tails output_log every 400ms and pushes SSE
+  6. server/server.py /api/jobs/:id/stream tails output_log every 400ms and pushes SSE
 
 ### SSE event types
 
@@ -375,7 +602,7 @@ Both started as systemd user services via `bash setup-services.sh`.
   ✓ 4.  Settings section — endpoint, timeout, display toggles, API keys, export/import/clear
   ✓ 5.  Agent Management — CRUD, chat integration, tool toggles
   ✓ 6.  Automated Tasks — CRUD, run now, scheduler, run log
-  ✓ 7.  Schedule backend — server.py scheduler reads/writes SQLite
+  ✓ 7.  Schedule backend — server/server.py scheduler reads/writes SQLite
   ✓ 8.  SQLite persistence — all data in data.db, localStorage eliminated
   ✓ 9.  Plans section — file-based .md, AI edits plan, execute plan → tasks
   ✓ 10. Home dashboard — split iframe + system report panel; later replaced by
@@ -386,7 +613,7 @@ Both started as systemd user services via `bash setup-services.sh`.
         Debug alongside the promoted job/worker monitor
   ✓ 12. Pipeline canvas — drag-and-drop nodes, zoom/pan, step config panel
   ✓ 13. Pipeline execution engine — agentic tool loop, PM review, retries, pause-on-fail
-  ✓ 14. Worker daemon (worker.py) — background job execution, decoupled from HTTP thread
+  ✓ 14. Worker daemon (agent/worker.py) — background job execution, decoupled from HTTP thread
   ✓ 15. Jobs table + SSE stream — enqueue → stream → replay on reconnect
   ✓ 16. Model router — per-step tier (local/fast/smart/powerful/auto), router config in settings
   ✓ 17. Anthropic API support — streaming + tool use via /v1/messages
@@ -396,9 +623,43 @@ Both started as systemd user services via `bash setup-services.sh`.
         (legacy loop-child hierarchy still renders for old jobs)
   ✓ 21. Job cancellation — POST /api/jobs/:id/cancel, worker checks between steps,
         ◼ Stop button cancels server-side (previously only detached the stream)
-  ✓ 20. systemd user services — setup-services.sh, auto-restart on crash
+  ✓ 20. systemd user services — deploy/legacy/setup-services.sh, auto-restart on
+        crash (superseded as the primary path by launcher.py + install.py, see 23-30;
+        kept under deploy/legacy/ for reference)
   ✓ 22. Models tab — hub browser + installed list, hardware fit badges,
         streaming install, delete (plans/model-selector-tab.md)
+  ✓ 23. Directory reorg — web/ (frontend), server/ (server.py), agent/ (worker.py),
+        deploy/legacy/ (old systemd deployment), data/ (all mutable/host-specific
+        state); plans/, docs/, CLAUDE.md, system_design.md unmoved
+  ✓ 24. atlantis.config.json + config loader — root-level gitignored {port,
+        root_path}; server/server.py's load_config() defaults on missing/malformed
+        JSON (including non-dict-but-valid JSON); root_path mirrored into
+        code_sessions on every boot, making the file authoritative over the DB
+  ✓ 25. launcher.py process supervisor — supervises server + worker (+ optional
+        no-root Linux Ollama); PID file; .restart/.stop flag files polled every
+        1s; supervisor mode (blocking loop, autostart entry point) + control
+        mode (--start/--stop/--restart CLI); clears stale flags on fresh start
+  ✓ 26. Per-OS start/stop/restart wrapper scripts — .sh (Linux)/.command
+        (macOS)/.bat (Windows), one-liners around launcher.py --start/--stop/--restart
+  ✓ 27. In-app Update/Restart/Stop — Settings "System" group; POST
+        /api/system/update (zip validation → stage-then-swap web/server/agent →
+        touch .restart), /api/system/restart, /api/system/stop (touch flag files)
+  ✓ 28. install.py first-time setup wizard — OS detect, workspace root_path
+        prompt, optional per-OS Ollama auto-install (macOS zip / Windows silent
+        exe / Linux no-root tar.zst via system zstd), optional autostart
+        registration (launchd/systemd user unit/Task Scheduler), writes data/ +
+        atlantis.config.json, calls server/server.py's init_db() directly,
+        starts launcher.py detached
+  ✓ 29. Per-OS bootstrap launchers — install.sh/install.command/install.bat:
+        check for python3 (OS-appropriate install guidance if missing), run
+        python3 install.py
+  ✓ 30. One-time welcome overlay — full-viewport overlay in web/index.html/app.js/
+        style.css, gated by settings.welcomeDismissed via the existing generic
+        /api/settings endpoint
+  ✓ 31. Portability fixes — _fs_safe()/_pipe_path_safe() in server/server.py use
+        Path.home() instead of a hardcoded /home fence (fixes macOS/Windows);
+        server/server.py has `from __future__ import annotations` for Python
+        3.9 compatibility (the module uses `X | None` type hints)
 
 ---
 
@@ -410,7 +671,7 @@ Both started as systemd user services via `bash setup-services.sh`.
   - Agent selection in Chat: separate dropdown alongside model dropdown
   - Task run log: last 50 runs per task, pruned in DB
   - Prompt timeout: hours unit, 0 = disabled, default 5h
-  - server.py is the entry point (replaces python3 -m http.server 5000)
+  - server/server.py is the entry point (replaces python3 -m http.server 5000)
   - SQLite (data.db, WAL mode) is the single source of truth and only IPC between server + worker
   - No Redis, no Celery, no message broker — SQLite is enough for one machine
   - No Docker — runs natively alongside Ollama
@@ -432,6 +693,31 @@ Both started as systemd user services via `bash setup-services.sh`.
     from the /tags page per model
   - Model pull streams NDJSON via fetch + ReadableStream (EventSource
     can't POST); no job record — a pull is not a pipeline job
+  - No per-OS package manager (brew/choco/apt) as the install mechanism —
+    install.py is a plain stdlib Python script, consistent with "no Docker"
+  - atlantis.config.json (not a DB row, not an env var) is the one
+    user-editable, gitignored source of truth for port/root_path;
+    server/server.py mirrors root_path into the DB so the rest of the
+    codebase can keep reading it from SQLite like every other setting
+  - agent/worker.py never reads atlantis.config.json directly — it only ever
+    gets root_path via the DB, so server/server.py stays the single writer
+  - launcher.py, not systemd/launchd/Task Scheduler directly, is what's
+    supervised by the OS — the OS-level entry just runs `python3 launcher.py`
+    once; restart/crash-recovery logic lives in one cross-platform script
+    instead of three OS-specific service definitions
+  - Control-plane communication with a running supervisor is via flag files
+    (data/.restart, data/.stop) polled once a second, not signals or a socket
+    — simplest thing that works identically on all three OSes
+  - is_alive() checks PID existence only, not process identity — accepted
+    PID-reuse race rather than solved, since a portable identity check isn't
+    available in stdlib across macOS/Linux/Windows
+  - In-app update stages web.new/server.new/agent.new and only swaps them in
+    after all three copy successfully — never delete-then-copy in place
+  - Linux Ollama install is no-root: downloaded under data/ollama/, run via
+    `ollama serve` with OLLAMA_MODELS pointed at data/ollama/models, launched
+    by launcher.py only if that binary exists and 11434 isn't already taken
+  - _fs_safe()/_pipe_path_safe() fence file access to Path.home(), not a
+    hardcoded /home — portability requirement once macOS/Windows were in scope
 
 ---
 
@@ -439,7 +725,7 @@ Both started as systemd user services via `bash setup-services.sh`.
 
   - WebSocket upgrade (bidirectional streaming; job cancel now solved via
     POST /api/jobs/:id/cancel + worker polling)
-  - OpenAI provider implementation in worker.py (route already exists, LLM calls not yet)
+  - OpenAI provider implementation in agent/worker.py (route already exists, LLM calls not yet)
   - Pipeline scheduler (run pipeline on cron, not just manual trigger)
   - Multi-worker parallelism (claim_job already atomic — just run N workers)
   - Model router settings UI (edit tiers from Settings page without raw JSON)
