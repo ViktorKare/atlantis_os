@@ -109,6 +109,8 @@ function buildHandle(leftPane, rightPane) {
   return handle;
 }
 
+let addControlEl = null;
+
 function buildAddControl() {
   const wrap = document.createElement('div');
   wrap.id = 'code-pane-add-wrap';
@@ -138,12 +140,13 @@ function render() {
     if (!pane.controller) mountPane(pane);
     row.appendChild(buildHandle(pane, panes[i + 1] || null));
   });
-  row.appendChild(buildAddControl());
+  if (!addControlEl) addControlEl = buildAddControl();
+  row.appendChild(addControlEl);
   updateTreeEdgeControl();
 }
 
 function addPane(type) {
-  const pane = { id: uid(), type, width: preferredWidths[type] || DEFAULT_WIDTHS[type] };
+  const pane = { id: uid(), type, width: clampWidth(preferredWidths[type] || DEFAULT_WIDTHS[type]) };
   panes.push(pane);
   currentLayoutName = null;
   render();
@@ -168,7 +171,7 @@ function closePane(id) {
 
 function applyLayoutObj(layout) {
   panes.forEach(p => p.controller?.destroy?.());
-  panes = layout.panes.map(p => ({ id: uid(), type: p.type, width: p.width }));
+  panes = layout.panes.map(p => ({ id: uid(), type: p.type, width: clampWidth(p.width || DEFAULT_WIDTHS[p.type]) }));
   currentLayoutName = layout.name;
   render();
   renderLayoutBar();
@@ -241,7 +244,10 @@ function persistPreferredWidths() {
 function loadPersisted() {
   try {
     const w = JSON.parse(localStorage.getItem('codePreferredWidths') || 'null');
-    if (w) preferredWidths = { ...DEFAULT_WIDTHS, ...w };
+    if (w) {
+      const merged = { ...DEFAULT_WIDTHS, ...w };
+      preferredWidths = Object.fromEntries(Object.entries(merged).map(([type, width]) => [type, clampWidth(width)]));
+    }
   } catch (_) {}
   try {
     const c = JSON.parse(localStorage.getItem('codeCustomLayouts') || 'null');
