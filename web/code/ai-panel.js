@@ -1,3 +1,6 @@
+import { EditorView, Decoration, WidgetType, keymap } from 'https://esm.sh/@codemirror/view@6';
+import { StateField, StateEffect } from 'https://esm.sh/@codemirror/state@6';
+
 export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEditor } = {}) {
   bodyEl.innerHTML = `
     <div class="code-chat-toolbar">
@@ -150,4 +153,75 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
 
 export function initCommandPalette() {
   // Wired up in Task 11.
+}
+
+const GHOST_TEXT = ' // TODO: handle the empty-array case here';
+
+const setGhost = StateEffect.define();
+const clearGhost = StateEffect.define();
+
+class GhostWidget extends WidgetType {
+  constructor(text) { super(); this.text = text; }
+  eq(other) { return other.text === this.text; }
+  toDOM() {
+    const span = document.createElement('span');
+    span.className = 'code-ghost-text';
+    span.textContent = this.text;
+    return span;
+  }
+}
+
+const ghostField = StateField.define({
+  create() { return Decoration.none; },
+  update(deco, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setGhost)) {
+        return Decoration.set([Decoration.widget({ widget: new GhostWidget(effect.value), side: 1 }).range(effect.value.pos ?? tr.state.selection.main.head)]);
+      }
+      if (effect.is(clearGhost)) return Decoration.none;
+    }
+    if (tr.docChanged) return Decoration.none;
+    return deco;
+  },
+  provide: f => EditorView.decorations.from(f),
+});
+
+const ghostKeymap = keymap.of([
+  {
+    key: 'Tab',
+    run(view) {
+      const deco = view.state.field(ghostField, false);
+      if (!deco || deco.size === 0) return false;
+      const pos = view.state.selection.main.head;
+      view.dispatch({ changes: { from: pos, insert: GHOST_TEXT }, effects: clearGhost.of(null) });
+      return true;
+    },
+  },
+  {
+    key: 'Escape',
+    run(view) {
+      const deco = view.state.field(ghostField, false);
+      if (!deco || deco.size === 0) return false;
+      view.dispatch({ effects: clearGhost.of(null) });
+      return true;
+    },
+  },
+]);
+
+const installedGhost = new WeakSet();
+
+export function showGhostText(editorController) {
+  const view = editorController?.getView?.();
+  if (!view) return;
+  if (!installedGhost.has(view)) {
+    installedGhost.add(view);
+    view.dispatch({ effects: StateEffect.appendConfig.of([ghostField, ghostKeymap]) });
+    view.dom.addEventListener('keydown', () => {
+      // any typed key other than Tab/Escape dismisses ghost text; docChanged handles inserts,
+      // this covers navigation keys too.
+      const deco = view.state.field(ghostField, false);
+      if (deco && deco.size) view.dispatch({ effects: clearGhost.of(null) });
+    }, { capture: true });
+  }
+  view.dispatch({ effects: setGhost.of({ pos: view.state.selection.main.head }) });
 }
