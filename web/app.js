@@ -168,6 +168,7 @@ function saveSettings() {
 }
 
 function initSettingsForm() {
+  document.getElementById('setting-name').value           = settings.userName || '';
   document.getElementById('setting-endpoint').value      = settings.endpoint;
   document.getElementById('setting-timeout').value       = settings.timeoutHours;
   document.getElementById('setting-token-stats').checked = settings.showTokenStats;
@@ -209,6 +210,7 @@ function initSettingsForm() {
 }
 
 document.getElementById('save-settings-btn').addEventListener('click', () => {
+  settings.userName              = document.getElementById('setting-name').value.trim();
   settings.endpoint              = document.getElementById('setting-endpoint').value.trim() || DEFAULT_OLLAMA_ENDPOINT;
   settings.timeoutHours          = parseFloat(document.getElementById('setting-timeout').value) || 0;
   settings.showTokenStats        = document.getElementById('setting-token-stats').checked;
