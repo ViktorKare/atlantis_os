@@ -334,6 +334,33 @@ POST /api/system/stop       no body → {ok: true}
   - Cancel: ◼ Stop button POSTs /api/jobs/:id/cancel; worker checks between
     steps and flips the run to cancelled
 
+  **Code**
+  - Two backends behind a mode toggle (`#code-mode-bar`): **Editor** (default)
+    — a custom-built, AI-native multi-pane editor — and **VS Code** — the
+    existing code-server iframe, unchanged
+  - Editor mode is a generic, freely-composable pane layout (`web/code/`):
+    any number of Chat / Editor / File-Tree panes, resizable via drag
+    handles (same mechanics as `#pipe-think-split`), addable/closable via a
+    `+` menu, rendered as floating glass cards over an ambient backdrop
+    (reusing Home/Pipelines' horizon-glow + dot-grid effect)
+  - Layouts: three built-in presets (Focus/Classic/Compare) plus
+    user-saved named layouts; current arrangement + custom layouts persist
+    via `localStorage` (`codeCurrentLayout`/`codeCustomLayouts`/
+    `codePreferredWidths`) — **not** DB-backed yet
+  - Editing engine: CodeMirror 6 (ESM via CDN, no bundler); each open file
+    keeps its own `EditorState` (independent undo history) inside a given
+    Editor pane; tabs swap state via `view.setState()`
+  - AI chat panes: independent conversations, each with model/skill/
+    auto-accept-mode (`Off`/`Auto-accept all`/`Auto-accept, ask on risky`)
+    controls; skills UI (picker, keyword auto-suggest chip, active-skill
+    status banner); ghost-text and inline diff-review are CM6 decorations;
+    `Cmd/Ctrl+K` opens a command palette
+  - **This entire Editor-mode pass is mock-only**: `MockFileProvider`/
+    `MockAIProvider` (`web/code/providers.js`) back everything — no real
+    `/api/fs/*` or Ollama calls yet. A follow-up backend-wiring pass swaps
+    in `RealFileProvider`/`RealAIProvider` and a `code_layouts` DB table
+    with the same shape as the `localStorage` stand-in
+
   **Debug** (job/worker monitor + system reference — the monitor promoted out
   of Pipelines, the reference panel absorbed from the now-removed standalone
   Brain section)
