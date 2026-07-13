@@ -84,6 +84,24 @@ export function createEditorPane(bodyEl, { fileProvider, onFocus } = {}) {
     setTimeout(() => { saveLabel.textContent = ''; }, 1200);
   }
 
+  function renderTabs() {
+    const bar = bodyEl.querySelector('.code-tabs');
+    bar.innerHTML = [...states.keys()].map(path => {
+      const name = path.split('/').pop();
+      const active = path === currentPath;
+      return `<div class="code-tab${active ? ' active' : ''}" data-path="${path}" title="${path}">
+        <span class="code-tab-name">${name}</span>
+        <button class="code-tab-close" data-path="${path}">×</button>
+      </div>`;
+    }).join('');
+    bar.querySelectorAll('.code-tab').forEach(el =>
+      el.addEventListener('click', e => { if (!e.target.closest('.code-tab-close')) openFile(el.dataset.path); })
+    );
+    bar.querySelectorAll('.code-tab-close').forEach(el =>
+      el.addEventListener('click', e => { e.stopPropagation(); closeTab(el.dataset.path); })
+    );
+  }
+
   async function openFile(path) {
     if (currentPath && view) states.set(currentPath, view.state);
     let state = states.get(path);
@@ -100,7 +118,24 @@ export function createEditorPane(bodyEl, { fileProvider, onFocus } = {}) {
     }
     currentPath = path;
     langLabel.textContent = detectLangLabel(path);
+    renderTabs();
     view.focus();
+  }
+
+  function closeTab(path) {
+    states.delete(path);
+    if (currentPath === path) {
+      const remaining = [...states.keys()];
+      currentPath = null;
+      if (remaining.length) {
+        openFile(remaining[remaining.length - 1]);
+        return;
+      }
+      view?.destroy();
+      view = null;
+      langLabel.textContent = 'plaintext';
+    }
+    renderTabs();
   }
 
   return {
@@ -113,7 +148,51 @@ export function createEditorPane(bodyEl, { fileProvider, onFocus } = {}) {
   };
 }
 
-export function createTreePane(bodyEl) {
-  bodyEl.innerHTML = '<div class="code-pane-placeholder">File tree — wired up in a later task.</div>';
+export function createTreePane(bodyEl, { fileProvider, openInEditor } = {}) {
+  bodyEl.innerHTML = `
+    <div class="code-tree-header">
+      <span class="code-root-label">project</span>
+    </div>
+    <div class="code-tree"></div>`;
+  const treeEl = bodyEl.querySelector('.code-tree');
+
+  async function renderLevel(container, dirPath) {
+    const entries = await fileProvider.list(dirPath);
+    const ul = document.createElement('ul');
+    ul.className = 'tree-list';
+    for (const entry of entries) {
+      const li = document.createElement('li');
+      li.className = `tree-item tree-${entry.type}`;
+      const row = document.createElement('div');
+      row.className = 'tree-row';
+      const icon = document.createElement('span');
+      icon.className = 'tree-icon';
+      icon.textContent = entry.type === 'dir' ? '▶' : '';
+      const label = document.createElement('span');
+      label.className = 'tree-label';
+      label.textContent = entry.name;
+      label.title = entry.path;
+      row.appendChild(icon);
+      row.appendChild(label);
+      li.appendChild(row);
+      if (entry.type === 'dir') {
+        let expanded = false;
+        row.addEventListener('click', async () => {
+          expanded = !expanded;
+          icon.textContent = expanded ? '▼' : '▶';
+          const existing = li.querySelector('.tree-list');
+          if (existing) { existing.remove(); return; }
+          await renderLevel(li, entry.path);
+        });
+      } else {
+        row.addEventListener('click', () => openInEditor(entry.path));
+      }
+      ul.appendChild(li);
+    }
+    container.appendChild(ul);
+  }
+
+  renderLevel(treeEl, '/project');
+
   return { destroy() { bodyEl.innerHTML = ''; } };
 }
