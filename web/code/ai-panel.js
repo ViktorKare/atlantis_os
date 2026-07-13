@@ -67,17 +67,22 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     const model = modelSelect.value;
     let fullText = '';
     const assistantDiv = appendBubble('assistant', '▋');
-    for await (const chunk of aiProvider.chat({ messages: history, model, skill: null })) {
-      fullText += chunk;
-      assistantDiv.innerHTML = marked.parse(fullText + ' ▋');
+    try {
+      for await (const chunk of aiProvider.chat({ messages: history, model, skill: null })) {
+        fullText += chunk;
+        assistantDiv.innerHTML = marked.parse(fullText + ' ▋');
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+      }
+      assistantDiv.innerHTML = marked.parse(fullText);
+      assistantDiv.querySelectorAll('pre code').forEach(b => Prism.highlightElement(b));
+      history.push({ role: 'assistant', content: fullText });
+    } catch (err) {
+      assistantDiv.innerHTML = marked.parse(fullText + `\n\n*Error: ${err?.message || 'request failed'}*`);
       chatWindow.scrollTop = chatWindow.scrollHeight;
+    } finally {
+      busy = false;
+      sendBtn.disabled = false;
     }
-    assistantDiv.innerHTML = marked.parse(fullText);
-    assistantDiv.querySelectorAll('pre code').forEach(b => Prism.highlightElement(b));
-    history.push({ role: 'assistant', content: fullText });
-
-    busy = false;
-    sendBtn.disabled = false;
   }
 
   sendBtn.addEventListener('click', sendMessage);
