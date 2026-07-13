@@ -176,7 +176,7 @@ const ghostField = StateField.define({
   update(deco, tr) {
     for (const effect of tr.effects) {
       if (effect.is(setGhost)) {
-        return Decoration.set([Decoration.widget({ widget: new GhostWidget(effect.value), side: 1 }).range(effect.value.pos ?? tr.state.selection.main.head)]);
+        return Decoration.set([Decoration.widget({ widget: new GhostWidget(GHOST_TEXT), side: 1 }).range(effect.value.pos ?? tr.state.selection.main.head)]);
       }
       if (effect.is(clearGhost)) return Decoration.none;
     }
@@ -216,12 +216,6 @@ export function showGhostText(editorController) {
   if (!installedGhost.has(view)) {
     installedGhost.add(view);
     view.dispatch({ effects: StateEffect.appendConfig.of([ghostField, ghostKeymap]) });
-    view.dom.addEventListener('keydown', () => {
-      // any typed key other than Tab/Escape dismisses ghost text; docChanged handles inserts,
-      // this covers navigation keys too.
-      const deco = view.state.field(ghostField, false);
-      if (deco && deco.size) view.dispatch({ effects: clearGhost.of(null) });
-    }, { capture: true });
   }
   view.dispatch({ effects: setGhost.of({ pos: view.state.selection.main.head }) });
 }
