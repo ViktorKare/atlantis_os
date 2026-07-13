@@ -69,7 +69,7 @@ let models   = [];
 let agents   = [];
 let tasks    = [];
 const CODE_SERVER_DEFAULT = `${location.protocol}//${location.hostname}:5001`; // code-server always runs on the same host as this app
-let settings = { endpoint: OLLAMA, showTokenStats: true, showThinking: true, timeoutHours: 5, pipelineManagerModel: '', pipelineMaxRetries: 3, brainPrePrompt: '', agentPrePrompt: '', chatPrePrompt: '', codeServerUrl: CODE_SERVER_DEFAULT, defaultAgentId: '', defaultAgentIdFallback: '' };
+let settings = { endpoint: OLLAMA, showTokenStats: true, showThinking: true, timeoutHours: 5, pipelineManagerModel: '', pipelineMaxRetries: 3, brainPrePrompt: '', agentPrePrompt: '', chatPrePrompt: '', codeServerUrl: CODE_SERVER_DEFAULT, defaultAgentId: '', defaultAgentIdFallback: '', userName: '' };
 
 let abortController = null;
 let isGenerating    = false;
@@ -500,7 +500,7 @@ function refreshAgentDropdown() {
 function homeGreetingText() {
   const h = new Date().getHours();
   const part = h < 12 ? 'morning' : h < 18 ? 'afternoon' : 'evening';
-  return `Good ${part}, Viktor`;
+  return settings.userName ? `Good ${part}, ${settings.userName}` : `Good ${part}`;
 }
 
 let homeMode = 'chat';  // 'chat' | 'brain'
@@ -4846,9 +4846,10 @@ function maybeShowWelcomeOverlay() {
 }
 
 document.getElementById('welcome-dismiss-btn').addEventListener('click', async () => {
+  settings.userName = document.getElementById('welcome-name-input').value.trim();
   settings.welcomeDismissed = true;
   document.getElementById('welcome-overlay').hidden = true;
-  await api('POST', '/api/settings', { welcomeDismissed: true }).catch(() => {});
+  await api('POST', '/api/settings', { welcomeDismissed: true, userName: settings.userName }).catch(() => {});
 });
 
 // ── Debug panel ───────────────────────────────────────────────────────────────
