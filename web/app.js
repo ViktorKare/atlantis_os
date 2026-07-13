@@ -586,6 +586,13 @@ async function sendFromHome() {
   const brainPrefixMatch = raw.match(/^[@/]brain\b\s*/i);
   const text = brainPrefixMatch ? raw.slice(brainPrefixMatch[0].length) : raw;
 
+  if ((homeMode === 'brain' || brainPrefixMatch) && text.toLowerCase() === '/clear') {
+    homeInput.value = '';
+    homeInput.style.height = 'auto';
+    document.getElementById('home-clear-btn').click();
+    return;
+  }
+
   if ((homeMode === 'brain' || brainPrefixMatch) && text) {
     homeInput.value = '';
     homeInput.style.height = 'auto';
@@ -1327,7 +1334,16 @@ function renderToolResultBubble(chatWin, name, result) {
 // ── Chat — send / stream ──────────────────────────────────────────────────────
 async function send() {
   const text = userInput.value.trim();
-  if (!text || !state.model) return;
+  if (!text) return;
+
+  if (text.toLowerCase() === '/clear') {
+    userInput.value = '';
+    userInput.style.height = 'auto';
+    clearBtn.click();
+    return;
+  }
+
+  if (!state.model) return;
 
   const thread = activeThread();
   if (!thread) return;
@@ -5139,6 +5155,7 @@ async function loadSysinfo(hostId = '') {
   } else {
     el.innerHTML = '';
   }
+  renderHubResults(); // fit-tier badges depend on sysinfo — refresh now that it changed
 }
 
 async function loadLocalModels() {
@@ -5400,8 +5417,13 @@ function stopHostsPolling() {
 
 async function checkAllHosts() {
   sshCheckStatus = {};
-  try { hostStatus = await api('POST', '/api/hosts/check'); }
-  catch (_) { /* keep last known status */ }
+  try {
+    hostStatus = await api('POST', '/api/hosts/check');
+    for (const h of hosts) {
+      const mac = hostStatus[h.id] && hostStatus[h.id].mac;
+      if (mac) h.mac = mac;
+    }
+  } catch (_) { /* keep last known status */ }
 }
 
 function initHosts() {
@@ -5542,6 +5564,10 @@ async function checkSsh(id) {
   try {
     const res = await api('POST', `/api/hosts/${id}/check-ssh`);
     sshCheckStatus[id] = { ok: res.ok, ts: Date.now() };
+    if (res.mac) {
+      const h = hosts.find(x => x.id === id);
+      if (h) h.mac = res.mac;
+    }
   } catch (e) {
     sshCheckStatus[id] = { ok: false, ts: Date.now() };
   }

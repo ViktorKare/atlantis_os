@@ -174,7 +174,7 @@ body::before {
   padding: 8vh 24px 40px;
 }
 
-#home-inner { width: 100%; max-width: 620px; display: flex; flex-direction: column; gap: 28px; }
+#home-inner { width: 100%; max-width: 620px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
 
 #home-greeting-row { display: flex; align-items: center; gap: 12px; }
 #home-greeting-mark { width: 34px; height: 34px; flex-shrink: 0; }
@@ -246,7 +246,8 @@ body::before {
   min-height: 0;
 }
 
-#home-brain-controls { display: none; align-items: center; gap: 8px; }
+#home-brain-controls { display: flex; align-items: center; gap: 8px; }
+#home-brain-controls[hidden] { display: none; }
 #home-brain-controls button {
   background: var(--bg3);
   color: var(--text);
@@ -295,15 +296,16 @@ body::before {
 #home-compose-card.is-brain::before {
   content: "";
   position: absolute;
-  inset: -1px;
-  border-radius: 15px;
-  padding: 1px;
+  inset: -2px;
+  border-radius: 16px;
+  padding: 3px;
   background: linear-gradient(120deg, var(--neon-cyan), var(--accent), var(--neon-purple), var(--neon-cyan));
   background-size: 300% 300%;
   -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
   mask-composite: exclude;
   animation: home-brain-border 6s linear infinite;
+  filter: drop-shadow(0 0 8px rgba(45, 217, 232, 0.55)) drop-shadow(0 0 14px rgba(154, 107, 224, 0.4));
   z-index: -1;
 }
 @media (prefers-reduced-motion: reduce) {

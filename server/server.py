@@ -4,7 +4,7 @@ Ollama UI — local server + SQLite persistence + task scheduler.
 Run with: python3 server.py
 """
 from __future__ import annotations
-import json, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib, concurrent.futures, socket
+import json, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib, concurrent.futures, socket, shlex
 from pathlib import Path
 
 BASE_DIR       = Path(__file__).parent           # server/
@@ -329,6 +329,34 @@ def check_ssh_access(ip, ssh_user):
     except Exception as e:
         return False, str(e)
 
+_LOCAL_IPS_CACHE = None
+
+def local_ips():
+    """IPs (plus localhost aliases) that resolve to this machine, so a
+    network_hosts entry pointing at ourselves can be probed directly
+    instead of over SSH — self-SSH is rarely set up for passwordless
+    BatchMode auth. UDP connect to a public IP doesn't send any packets;
+    it's just a portable way to ask the OS which interface/IP would be
+    used for outbound traffic, which catches the LAN IP that
+    gethostbyname(gethostname()) can miss (e.g. Debian/Ubuntu's
+    127.0.1.1 hosts-file quirk)."""
+    global _LOCAL_IPS_CACHE
+    if _LOCAL_IPS_CACHE is None:
+        ips = {'127.0.0.1', 'localhost', '::1'}
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None):
+                ips.add(info[4][0])
+        except Exception:
+            pass
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(('8.8.8.8', 80))
+                ips.add(s.getsockname()[0])
+        except Exception:
+            pass
+        _LOCAL_IPS_CACHE = ips
+    return _LOCAL_IPS_CACHE
+
 def probe_host_sysinfo(ip, ssh_user, os_, gpu_arch):
     """Remote equivalent of _models_sysinfo's local probe, run over SSH.
     Mirrors the same sysctl/proc-meminfo/nvidia-smi commands but targets
@@ -392,6 +420,51 @@ def send_wol_packet(mac):
         sock.sendto(packet, ('255.255.255.255', 9))
     finally:
         sock.close()
+
+_MAC_RE = re.compile(r'([0-9a-f]{2}:){5}[0-9a-f]{2}')
+
+def _mac_fetch_cmd(ip, os_):
+    """Shell one-liner that finds the MAC of whichever interface owns `ip`
+    (not just "first non-loopback"), since that's the NIC Wake-on-LAN needs
+    to target. `ip` is shlex-quoted before embedding because for the remote
+    path this string is shipped to a remote shell over ssh to interpret."""
+    q = shlex.quote(ip)
+    if os_ == 'macos':
+        return (f'ifconfig | awk -v ip={q} '
+                '\'/^[^ \\t]/{ether=""} /ether /{ether=$2} '
+                '$1=="inet" && $2==ip{print ether}\'')
+    if os_ == 'linux':
+        return (f'ip -o addr show | awk -v ip={q} '
+                '\'{n=split($4,a,"/"); if($3=="inet" && a[1]==ip) print $2}\' '
+                '| xargs -r -I{} cat /sys/class/net/{}/address')
+    return None
+
+def fetch_mac(ip, ssh_user, os_):
+    """Best-effort MAC discovery for a network_hosts row, run locally
+    (no ssh) if `ip` is this machine, otherwise over ssh — same
+    BatchMode/StrictHostKeyChecking/ConnectTimeout flags as check_ssh_access,
+    so a host that can't be reached/authorized just yields None instead of
+    raising. Result is validated against a strict MAC regex before being
+    trusted, since garbage/empty command output must never get saved."""
+    cmd = _mac_fetch_cmd(ip, os_)
+    if not cmd:
+        return None
+    try:
+        if ip in local_ips():
+            result = subprocess.run(['sh', '-c', cmd], capture_output=True, timeout=5, text=True)
+        else:
+            result = subprocess.run(
+                ['ssh', '-o', 'BatchMode=yes',
+                 '-o', 'StrictHostKeyChecking=accept-new',
+                 '-o', 'ConnectTimeout=2',
+                 f'{ssh_user}@{ip}', cmd],
+                capture_output=True, timeout=6, text=True)
+        mac = result.stdout.strip().lower()
+        if result.returncode == 0 and _MAC_RE.fullmatch(mac):
+            return mac
+    except Exception:
+        pass
+    return None
 
 # ── Schedule logic ─────────────────────────────────────────────────────────────
 
@@ -873,7 +946,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _check_hosts(self):
         with get_db() as db:
             rows = rows_to_list(db.execute(
-                'SELECT id, ip, ollama_port FROM network_hosts'
+                'SELECT id, ip, ollama_port, mac, ssh_user, os FROM network_hosts'
             ).fetchall())
         results = {}
         if rows:
@@ -882,6 +955,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                            for r in rows}
                 for fut in concurrent.futures.as_completed(futures):
                     results[futures[fut]] = fut.result()
+
+        # MAC auto-fill: only attempt for hosts still missing one, and only
+        # over ssh if the ping check above already found them online — skips
+        # wasted ssh handshakes against hosts that are down.
+        to_fetch = [r for r in rows if not r['mac'] and
+                    (r['ip'] in local_ips() or results.get(r['id'], {}).get('online'))]
+        if to_fetch:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(to_fetch)) as pool:
+                futures = {pool.submit(fetch_mac, r['ip'], r['ssh_user'], r['os']): r['id']
+                           for r in to_fetch}
+                fetched = {futures[fut]: fut.result() for fut in concurrent.futures.as_completed(futures)}
+            found = {hid: mac for hid, mac in fetched.items() if mac}
+            if found:
+                with get_db() as db:
+                    for hid, mac in found.items():
+                        db.execute('UPDATE network_hosts SET mac=? WHERE id=?', (mac, hid))
+                for hid, mac in found.items():
+                    results.setdefault(hid, {})['mac'] = mac
         self._json(results)
 
     def _wake_host(self, id):
@@ -897,11 +988,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _check_ssh(self, id):
         with get_db() as db:
-            row = db.execute('SELECT ip, ssh_user FROM network_hosts WHERE id=?', (id,)).fetchone()
+            row = db.execute('SELECT ip, ssh_user, os, mac FROM network_hosts WHERE id=?', (id,)).fetchone()
         if not row:
             return self.send_error(404)
         ok, error = check_ssh_access(row['ip'], row['ssh_user'])
-        self._json({'ok': ok, 'error': error})
+        mac = None
+        if ok and not row['mac']:
+            mac = fetch_mac(row['ip'], row['ssh_user'], row['os'])
+            if mac:
+                with get_db() as db:
+                    db.execute('UPDATE network_hosts SET mac=? WHERE id=?', (mac, id))
+        self._json({'ok': ok, 'error': error, 'mac': mac})
 
     # ── Threads ─────────────────────────────────────────────────────────────
 
@@ -2249,22 +2346,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self._json({'models': [], 'error': str(e)}, 502)
 
-    def _models_sysinfo(self):
-        qs = self.path.split('?', 1)[-1] if '?' in self.path else ''
-        host_id = urllib.parse.parse_qs(qs).get('host_id', [''])[0].strip()
-        if host_id:
-            with get_db() as db:
-                row = db.execute(
-                    'SELECT ip, ssh_user, os, gpu_arch FROM network_hosts WHERE id=?',
-                    (host_id,)
-                ).fetchone()
-            if not row:
-                return self._json({'ram_gb': 0.0, 'vram_gb': 0.0, 'disk_free_gb': 0.0,
-                                    'live': False, 'os': None, 'gpu_arch': None})
-            probe = probe_host_sysinfo(row['ip'], row['ssh_user'], row['os'], row['gpu_arch'])
-            return self._json({'ram_gb': probe['ram_gb'], 'vram_gb': probe['vram_gb'],
-                               'disk_free_gb': 0.0, 'live': probe['live'],
-                               'os': row['os'], 'gpu_arch': row['gpu_arch']})
+    def _local_sysinfo(self):
+        """Direct probe of the machine server.py runs on — no SSH involved."""
         ram_gb = vram_gb = 0.0
         try:
             if sys.platform == 'darwin':
@@ -2294,9 +2377,43 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             disk_free_gb = shutil.disk_usage('/').free / 1e9
         except Exception:
             disk_free_gb = 0.0
-        self._json({'ram_gb': round(ram_gb, 1), 'vram_gb': round(vram_gb, 1),
-                    'disk_free_gb': round(disk_free_gb, 1), 'live': True,
-                    'os': None, 'gpu_arch': None})
+        return {'ram_gb': round(ram_gb, 1), 'vram_gb': round(vram_gb, 1),
+                'disk_free_gb': round(disk_free_gb, 1), 'live': True,
+                'os': None, 'gpu_arch': None}
+
+    def _models_sysinfo(self):
+        qs = self.path.split('?', 1)[-1] if '?' in self.path else ''
+        host_id = urllib.parse.parse_qs(qs).get('host_id', [''])[0].strip()
+        if not host_id:
+            # "Auto" should reflect the same reachable-host resolution chat/
+            # pipelines use (settings.endpoint, kept in sync with the Hosts
+            # section's enabled/priority ordering by regenerate_ollama_endpoint_setting()),
+            # not always probe whatever machine server.py happens to run on.
+            ip = urllib.parse.urlparse(self._models_endpoint('')).hostname
+            with get_db() as db:
+                row = db.execute(
+                    'SELECT id FROM network_hosts WHERE ip=?', (ip,)
+                ).fetchone()
+            if row:
+                host_id = row['id']
+        if host_id:
+            with get_db() as db:
+                row = db.execute(
+                    'SELECT ip, ssh_user, os, gpu_arch FROM network_hosts WHERE id=?',
+                    (host_id,)
+                ).fetchone()
+            if not row:
+                return self._json({'ram_gb': 0.0, 'vram_gb': 0.0, 'disk_free_gb': 0.0,
+                                    'live': False, 'os': None, 'gpu_arch': None})
+            if row['ip'] in local_ips():
+                # This host entry is the machine server.py runs on — probe it
+                # directly instead of SSHing to ourselves.
+                return self._json(self._local_sysinfo())
+            probe = probe_host_sysinfo(row['ip'], row['ssh_user'], row['os'], row['gpu_arch'])
+            return self._json({'ram_gb': probe['ram_gb'], 'vram_gb': probe['vram_gb'],
+                               'disk_free_gb': 0.0, 'live': probe['live'],
+                               'os': row['os'], 'gpu_arch': row['gpu_arch']})
+        self._json(self._local_sysinfo())
 
     def _hub_fetch(self, url):
         req = urllib.request.Request(url, headers={
