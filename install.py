@@ -11,6 +11,36 @@ OLLAMA_MACOS_URL   = 'https://ollama.com/download/Ollama-darwin.zip'
 OLLAMA_WINDOWS_URL = 'https://ollama.com/download/OllamaSetup.exe'
 OLLAMA_LINUX_URL   = 'https://ollama.com/download/ollama-linux-amd64.tar.zst'
 
+CODE_SERVER_INSTALL_URL = 'https://code-server.dev/install.sh'
+CODE_SERVER_DIR         = DATA_DIR / 'code-server'
+CODE_SERVER_BIN         = CODE_SERVER_DIR / 'bin' / 'code-server'
+
+CERT_DIR  = DATA_DIR / 'certs'
+CERT_FILE = CERT_DIR / 'cert.pem'
+KEY_FILE  = CERT_DIR / 'key.pem'
+
+
+def local_ipv4s():
+    """LAN IPv4 addresses for this machine, for the cert's subjectAltName —
+    mirrors server.py's local_ips() UDP-connect trick (no packets sent, just
+    asks the OS which interface would be used for outbound traffic)."""
+    ips = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            ip = info[4][0]
+            if ':' not in ip:
+                ips.add(ip)
+    except OSError:
+        pass
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(('8.8.8.8', 80))
+            ips.add(s.getsockname()[0])
+    except OSError:
+        pass
+    ips.discard('127.0.0.1')
+    return sorted(ips)
+
 WELCOME_TEXT = """
 Atlantis OS — a local AI workspace that runs entirely on your machine,
 backed by Ollama. This wizard will ask a couple of questions, then get
@@ -48,6 +78,71 @@ def ollama_responds():
             return True
     except OSError:
         return False
+
+
+def setup_https_certs(os_name):
+    if CERT_FILE.exists() and KEY_FILE.exists():
+        print('HTTPS cert already present — skipping.')
+        return
+    if os_name == 'windows':
+        print('HTTPS setup skipped on Windows (no bundled openssl). Atlantis will run on plain HTTP.')
+        return
+    openssl_bin = shutil.which('openssl')
+    if not openssl_bin:
+        print('HTTPS setup skipped: openssl not found on PATH. Atlantis will run on plain HTTP.')
+        return
+    CERT_DIR.mkdir(parents=True, exist_ok=True)
+    san_entries = ['DNS:localhost', 'IP:127.0.0.1'] + [f'IP:{ip}' for ip in local_ipv4s()]
+    try:
+        subprocess.run([
+            openssl_bin, 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '825',
+            '-keyout', str(KEY_FILE), '-out', str(CERT_FILE),
+            '-subj', '/CN=atlantis',
+            '-addext', 'subjectAltName=' + ','.join(san_entries),
+        ], check=True, capture_output=True)
+    except Exception as e:
+        print(f'HTTPS cert generation failed: {e}. Atlantis will run on plain HTTP.')
+        KEY_FILE.unlink(missing_ok=True)
+        CERT_FILE.unlink(missing_ok=True)
+        return
+    KEY_FILE.chmod(0o600)
+    print(f'HTTPS cert generated, covering: {", ".join(san_entries)}')
+
+
+def code_server_responds():
+    try:
+        with socket.create_connection(('127.0.0.1', 5001), timeout=1.5):
+            return True
+    except OSError:
+        return False
+
+
+def setup_code_server(os_name):
+    if os_name == 'windows':
+        print('code-server setup skipped on Windows (official support is WSL-only).')
+        return
+    if code_server_responds():
+        print('code-server is already running — skipping install.')
+        return
+    if shutil.which('code-server') or CODE_SERVER_BIN.exists():
+        print('code-server is already installed — skipping install.')
+        return
+    print('Installing code-server (no-root, standalone)...')
+    CODE_SERVER_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            script_path = Path(tmp) / 'install-code-server.sh'
+            urllib.request.urlretrieve(CODE_SERVER_INSTALL_URL, script_path)
+            subprocess.run(
+                ['sh', str(script_path), '--method=standalone', f'--prefix={CODE_SERVER_DIR}'],
+                check=True)
+    except Exception as e:
+        print(f'code-server install failed: {e}. Atlantis will still install — re-run install.py later to retry.')
+        return
+    if CODE_SERVER_BIN.exists():
+        print('code-server installed.')
+    else:
+        print('code-server install script finished but binary not found at the expected path — check data/code-server/ manually.')
 
 
 def install_ollama_macos():
