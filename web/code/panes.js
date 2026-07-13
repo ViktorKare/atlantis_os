@@ -280,7 +280,7 @@ function initCode() {
   if (inited) return;
   inited = true;
   wireStaticControls();
-  initCommandPalette({ addPane, applyLayoutByName, getFocusedEditor });
+  initCommandPalette({ addPane, applyLayoutByName, getFocusedEditor, fileProvider });
   const saved = loadPersisted();
   if (saved && Array.isArray(saved.panes) && saved.panes.length) {
     panes = saved.panes.map(p => ({ id: uid(), type: p.type, width: clampWidth(p.width || DEFAULT_WIDTHS[p.type]) }));

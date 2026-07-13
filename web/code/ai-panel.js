@@ -151,8 +151,76 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
   };
 }
 
-export function initCommandPalette() {
-  // Wired up in Task 11.
+export function initCommandPalette({ addPane, applyLayoutByName, getFocusedEditor, fileProvider }) {
+  const overlay = document.getElementById('code-palette-overlay');
+  const input   = document.getElementById('code-palette-input');
+  const list    = document.getElementById('code-palette-list');
+
+  const actions = [
+    { label: 'Add Chat Pane',        run: () => addPane('chat') },
+    { label: 'Add Editor Pane',      run: () => addPane('editor') },
+    { label: 'Add File Tree Pane',   run: () => addPane('tree') },
+    { label: 'Apply Focus Layout',   run: () => applyLayoutByName('Focus') },
+    { label: 'Apply Classic Layout', run: () => applyLayoutByName('Classic') },
+    { label: 'Apply Compare Layout', run: () => applyLayoutByName('Compare') },
+    { label: 'Suggest here (demo)',  run: () => showGhostText(getFocusedEditor()) },
+    { label: 'Propose mock edit (demo)', run: () => showDiffReview(getFocusedEditor(), fileProvider) },
+  ];
+
+  let filtered = actions;
+  let activeIdx = 0;
+
+  function renderList() {
+    list.innerHTML = filtered.map((a, i) =>
+      `<div class="code-palette-item${i === activeIdx ? ' active' : ''}" data-idx="${i}">${a.label}</div>`
+    ).join('');
+    list.querySelectorAll('.code-palette-item').forEach(el =>
+      el.addEventListener('click', () => runAction(Number(el.dataset.idx)))
+    );
+  }
+
+  function runAction(idx) {
+    filtered[idx]?.run();
+    close();
+  }
+
+  function open() {
+    overlay.classList.remove('hidden');
+    input.value = '';
+    filtered = actions;
+    activeIdx = 0;
+    renderList();
+    input.focus();
+  }
+
+  function close() {
+    overlay.classList.add('hidden');
+  }
+
+  input.addEventListener('input', () => {
+    const q = input.value.toLowerCase();
+    filtered = actions.filter(a => a.label.toLowerCase().includes(q));
+    activeIdx = 0;
+    renderList();
+  });
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { close(); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); activeIdx = Math.min(activeIdx + 1, filtered.length - 1); renderList(); return; }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); activeIdx = Math.max(activeIdx - 1, 0); renderList(); return; }
+    if (e.key === 'Enter')     { e.preventDefault(); runAction(activeIdx); }
+  });
+
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      if (document.getElementById('section-code')?.classList.contains('active')) {
+        e.preventDefault();
+        open();
+      }
+    }
+  });
 }
 
 const GHOST_TEXT = ' // TODO: handle the empty-array case here';
