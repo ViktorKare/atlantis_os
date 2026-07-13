@@ -629,6 +629,14 @@
       importScripts('https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/base/worker/workerMain.js');
     `], { type: 'text/javascript' })) };
   </script>
+  <div id="welcome-overlay" class="welcome-overlay" hidden>
+    <div class="welcome-card">
+      <h2>Welcome to Atlantis OS</h2>
+      <p>Atlantis is a local AI workspace that runs entirely on your machine, backed by Ollama — your chats, agents, and data never leave this computer.</p>
+      <p>Head to the <strong>Models</strong> tab to install a model sized for your hardware — look for the fit badges next to each one.</p>
+      <button id="welcome-dismiss-btn" class="btn-primary">Got it</button>
+    </div>
+  </div>
   <script src="app.js"></script>
 </body>
 </html>

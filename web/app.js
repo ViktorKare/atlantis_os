@@ -4700,6 +4700,7 @@ document.getElementById('code-new-dir-btn').addEventListener('click', async () =
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   await Promise.all([loadSettings(), loadAgents(), loadTasks(), load(), loadHosts()]);
+  maybeShowWelcomeOverlay();
   await fetchModels();
   refreshAgentDropdown();
   // Restore last active thread's model/agent
@@ -4712,6 +4713,17 @@ async function init() {
   else { renderSidebar(); renderChat(); }
   initHome();
 }
+
+function maybeShowWelcomeOverlay() {
+  if (settings.welcomeDismissed) return;
+  document.getElementById('welcome-overlay').hidden = false;
+}
+
+document.getElementById('welcome-dismiss-btn').addEventListener('click', async () => {
+  settings.welcomeDismissed = true;
+  document.getElementById('welcome-overlay').hidden = true;
+  await api('POST', '/api/settings', { welcomeDismissed: true }).catch(() => {});
+});
 
 // ── Debug panel ───────────────────────────────────────────────────────────────
 
