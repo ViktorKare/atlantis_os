@@ -219,3 +219,64 @@ export function showGhostText(editorController) {
   }
   view.dispatch({ effects: setGhost.of({ pos: view.state.selection.main.head }) });
 }
+
+const MOCK_DIFF = {
+  removeLine: 'insufficient input validation',
+  addLines: ['if (!input) return null;', 'const cleaned = input.trim();'],
+};
+
+const setDiff = StateEffect.define();
+const clearDiff = StateEffect.define();
+
+class DiffHunkWidget extends WidgetType {
+  constructor(onAccept, onReject) { super(); this.onAccept = onAccept; this.onReject = onReject; }
+  eq() { return false; }
+  toDOM() {
+    const wrap = document.createElement('div');
+    wrap.className = 'code-diff-hunk';
+    wrap.innerHTML = `
+      <div class="code-diff-line code-diff-remove">− ${MOCK_DIFF.removeLine}</div>
+      ${MOCK_DIFF.addLines.map(l => `<div class="code-diff-line code-diff-add">+ ${l}</div>`).join('')}
+      <div class="code-diff-actions">
+        <button class="code-diff-accept">Accept</button>
+        <button class="code-diff-reject">Reject</button>
+      </div>`;
+    wrap.querySelector('.code-diff-accept').addEventListener('click', () => this.onAccept());
+    wrap.querySelector('.code-diff-reject').addEventListener('click', () => this.onReject());
+    return wrap;
+  }
+}
+
+const diffField = StateField.define({
+  create() { return Decoration.none; },
+  update(deco, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setDiff)) {
+        return Decoration.set([Decoration.widget({ widget: effect.value, side: 1, block: true }).range(tr.state.selection.main.head)]);
+      }
+      if (effect.is(clearDiff)) return Decoration.none;
+    }
+    return deco.map(tr.changes);
+  },
+  provide: f => EditorView.decorations.from(f),
+});
+
+const installedDiff = new WeakSet();
+
+export function showDiffReview(editorController, fileProvider) {
+  const view = editorController?.getView?.();
+  const path = editorController?.getActiveFile?.();
+  if (!view || !path) return;
+  if (!installedDiff.has(view)) {
+    installedDiff.add(view);
+    view.dispatch({ effects: StateEffect.appendConfig.of([diffField]) });
+  }
+  const onAccept = () => {
+    const insertion = MOCK_DIFF.addLines.join('\n') + '\n';
+    const pos = view.state.selection.main.head;
+    view.dispatch({ changes: { from: pos, insert: insertion }, effects: clearDiff.of(null) });
+    fileProvider.write(path, view.state.doc.toString());
+  };
+  const onReject = () => view.dispatch({ effects: clearDiff.of(null) });
+  view.dispatch({ effects: setDiff.of(new DiffHunkWidget(onAccept, onReject)) });
+}
