@@ -1,5 +1,5 @@
 import { EditorView, Decoration, WidgetType, keymap } from 'https://esm.sh/@codemirror/view@6';
-import { StateField, StateEffect } from 'https://esm.sh/@codemirror/state@6';
+import { StateField, StateEffect, Prec } from 'https://esm.sh/@codemirror/state@6';
 
 export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEditor } = {}) {
   bodyEl.innerHTML = `
@@ -215,7 +215,7 @@ export function showGhostText(editorController) {
   if (!view) return;
   if (!installedGhost.has(view)) {
     installedGhost.add(view);
-    view.dispatch({ effects: StateEffect.appendConfig.of([ghostField, ghostKeymap]) });
+    view.dispatch({ effects: StateEffect.appendConfig.of([ghostField, Prec.highest(ghostKeymap)]) });
   }
   view.dispatch({ effects: setGhost.of({ pos: view.state.selection.main.head }) });
 }
