@@ -1349,23 +1349,47 @@ async function executeTool(name, params) {
   }
 }
 
+function buildToolBlock(name, args) {
+  const details = document.createElement('details');
+  details.className = 'tool-block';
+
+  const summary = document.createElement('summary');
+  summary.innerHTML =
+    '<svg class="tool-block-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>' +
+    `<span class="tool-block-name">${escHtml(name)}</span>` +
+    '<span class="tool-block-status">Running…</span>';
+
+  const content = document.createElement('div');
+  content.className = 'tool-block-content';
+  content.innerHTML = `<div class="tool-block-section-label">Arguments</div><pre class="tool-block-pre">${escHtml(JSON.stringify(args ?? {}))}</pre>`;
+
+  details.appendChild(summary);
+  details.appendChild(content);
+  return { el: details, statusEl: summary.querySelector('.tool-block-status'), contentEl: content };
+}
+
+function finishToolBlock(block, result) {
+  if (!block) return;
+  block.statusEl.textContent = 'Done';
+  block.statusEl.classList.add('done');
+  const text      = String(result);
+  const truncated = text.length > 1000 ? text.slice(0, 1000) + '\n…' : text;
+  block.contentEl.insertAdjacentHTML('beforeend',
+    `<div class="tool-block-section-label">Result</div><pre class="tool-block-pre">${escHtml(truncated)}</pre>`);
+}
+
 function renderToolCallBubble(chatWin, toolCalls) {
   const wrap = document.createElement('div');
-  wrap.className = 'message tool-calls';
-  wrap.innerHTML = toolCalls.map(tc =>
-    `<div class="tool-call-chip">🔧 <b>${escHtml(tc.function.name)}</b> ${escHtml(JSON.stringify(tc.function.arguments ?? tc.function.parameters ?? {}))}</div>`
-  ).join('');
+  wrap.className = 'message tool-block-msg';
+  wrap._blocks = toolCalls.map(tc => buildToolBlock(tc.function.name, tc.function.arguments ?? tc.function.parameters ?? {}));
+  wrap._blocks.forEach(b => wrap.appendChild(b.el));
   chatWin.appendChild(wrap);
   chatWin.scrollTop = chatWin.scrollHeight;
   return wrap;
 }
 
-function renderToolResultBubble(chatWin, name, result) {
-  const wrap = document.createElement('div');
-  wrap.className = 'message tool-result';
-  wrap.innerHTML = `<div class="tool-result-chip"><span class="tool-result-label">✓ ${escHtml(name)}</span><pre class="tool-result-body">${escHtml(String(result).slice(0, 1000))}${String(result).length > 1000 ? '\n…' : ''}</pre></div>`;
-  chatWin.appendChild(wrap);
-  chatWin.scrollTop = chatWin.scrollHeight;
+function renderToolResultBubble(toolWrap, index, result) {
+  finishToolBlock(toolWrap?._blocks?.[index], result);
 }
 
 // ── Chat — send / stream ──────────────────────────────────────────────────────
@@ -1507,11 +1531,12 @@ async function send() {
 
       // Handle native tool calls
       if (turnToolCalls.length > 0) {
-        renderToolCallBubble(chatWindow, turnToolCalls);
+        const toolWrap = renderToolCallBubble(chatWindow, turnToolCalls);
         apiMessages.push({ role: 'assistant', content: '', tool_calls: turnToolCalls });
-        for (const tc of turnToolCalls) {
+        for (let i = 0; i < turnToolCalls.length; i++) {
+          const tc = turnToolCalls[i];
           const result = await executeTool(tc.function.name, tc.function.arguments ?? {});
-          renderToolResultBubble(chatWindow, tc.function.name, result);
+          renderToolResultBubble(toolWrap, i, result);
           apiMessages.push({ role: 'tool', content: String(result) });
         }
         full = ''; streamThinking = ''; doneMeta = null;
@@ -4279,11 +4304,12 @@ async function sendHomeBrainMessage(text) {
       }
 
       if (turnToolCalls.length > 0) {
-        renderToolCallBubble(win, turnToolCalls);
+        const toolWrap = renderToolCallBubble(win, turnToolCalls);
         apiMessages.push({ role: 'assistant', content: '', tool_calls: turnToolCalls });
-        for (const tc of turnToolCalls) {
+        for (let i = 0; i < turnToolCalls.length; i++) {
+          const tc = turnToolCalls[i];
           const result = await executeTool(tc.function.name, tc.function.arguments ?? {});
-          renderToolResultBubble(win, tc.function.name, result);
+          renderToolResultBubble(toolWrap, i, result);
           apiMessages.push({ role: 'tool', content: String(result) });
         }
         full = '';
