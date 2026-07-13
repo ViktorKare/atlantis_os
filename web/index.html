@@ -163,21 +163,55 @@
       </aside>
       <div id="chat-main">
         <header id="toolbar">
-          <div id="toolbar-left">
-            <select id="agent-select"><option value="">No agent</option></select>
-            <select id="model-select"></select>
+          <div id="thread-switcher-wrap">
+            <button id="thread-switcher-btn">
+              <span id="thread-switcher-name">New chat</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <ul id="thread-switcher-menu" hidden></ul>
           </div>
-          <button id="clear-btn">Clear chat</button>
+          <div id="toolbar-right">
+            <button id="sidebar-toggle-btn" class="icon-btn" title="Toggle thread list">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+            </button>
+            <button id="toolbar-more-btn" class="icon-btn" title="More">
+              <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
+            </button>
+            <div id="toolbar-more-menu" hidden>
+              <button id="clear-btn">Clear chat</button>
+              <button id="system-prompt-toggle-btn">System prompt</button>
+            </div>
+          </div>
         </header>
         <details id="system-prompt-panel">
           <summary>System prompt</summary>
           <textarea id="system-prompt" placeholder="Enter a system prompt..."></textarea>
         </details>
         <div id="chat-window"></div>
-        <div id="input-area">
-          <div class="spin-wrap"><textarea id="user-input" placeholder="Type a message... (Enter to send, Shift+Enter for newline)" rows="1"></textarea></div>
-          <button id="abandon-btn" hidden>Abandon</button>
-          <button id="send-btn">Send</button>
+        <div id="composer-wrap">
+          <div id="input-area">
+            <textarea id="user-input" placeholder="Type a message... (Enter to send, Shift+Enter for newline)" rows="1"></textarea>
+            <div id="composer-row">
+              <button id="attach-file-btn" class="icon-btn placeholder" title="Attach file — coming soon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
+              <button id="attach-folder-btn" class="icon-btn placeholder" title="Attach folder — coming soon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>
+              </button>
+              <div id="composer-spacer"></div>
+              <select id="agent-select" class="pill-select"><option value="">No agent</option></select>
+              <select id="model-select" class="pill-select"></select>
+              <button id="mic-btn" class="icon-btn placeholder" title="Voice input — coming soon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><path d="M12 18v3"/></svg>
+              </button>
+              <button id="abandon-btn" class="send-btn" hidden title="Abandon">
+                <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+              </button>
+              <button id="send-btn" class="send-btn" title="Send">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

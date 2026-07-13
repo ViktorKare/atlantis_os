@@ -90,6 +90,15 @@ const chatWindow   = document.getElementById('chat-window');
 const userInput    = document.getElementById('user-input');
 const abandonBtn   = document.getElementById('abandon-btn');
 const sendBtn      = document.getElementById('send-btn');
+const chatSidebar        = document.getElementById('sidebar');
+const sidebarToggleBtn    = document.getElementById('sidebar-toggle-btn');
+const threadSwitcherBtn   = document.getElementById('thread-switcher-btn');
+const threadSwitcherName  = document.getElementById('thread-switcher-name');
+const threadSwitcherMenu  = document.getElementById('thread-switcher-menu');
+const toolbarMoreBtn      = document.getElementById('toolbar-more-btn');
+const toolbarMoreMenu     = document.getElementById('toolbar-more-menu');
+const systemPromptToggleBtn = document.getElementById('system-prompt-toggle-btn');
+const systemPromptPanel   = document.getElementById('system-prompt-panel');
 const homeGreeting     = document.getElementById('home-greeting');
 const homeInput        = document.getElementById('home-input');
 const homeAgentSelect  = document.getElementById('home-agent-select');
@@ -1079,6 +1088,7 @@ async function deleteThread(id) {
 }
 
 function renderSidebar() {
+  threadSwitcherName.textContent = activeThread()?.name || 'New chat';
   threadList.innerHTML = '';
   state.threads.filter(t => t.name !== '__brain__').forEach(t => {
     const li  = document.createElement('li');
@@ -1127,29 +1137,49 @@ function addBubble(role, content, meta = null, thinking = null) {
 
   wrap.appendChild(bubble);
   wrap.appendChild(buildMeta(role, content, meta));
+  if (role === 'assistant') wrap.appendChild(buildBrandMark());
   chatWindow.appendChild(wrap);
   chatWindow.scrollTop = chatWindow.scrollHeight;
   return bubble;
 }
+
+const ICON_COPY  = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+const ICON_SPEAK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>';
+const ICON_MORE  = '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>';
 
 function buildMeta(role, content, meta) {
   const row = document.createElement('div');
   row.className = 'message-meta';
 
   if (role === 'assistant') {
-    const btn = document.createElement('button');
-    btn.className   = 'copy-btn';
-    btn.textContent = 'Copy';
-    btn.addEventListener('click', () => {
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'icon-btn copy-btn';
+    copyBtn.title      = 'Copy';
+    copyBtn.innerHTML  = ICON_COPY;
+    copyBtn.addEventListener('click', () => {
       navigator.clipboard.writeText(content).then(() => {
-        btn.textContent = 'Copied!';
-        setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+        copyBtn.innerHTML = ICON_CHECK;
+        setTimeout(() => { copyBtn.innerHTML = ICON_COPY; }, 1500);
       });
     });
-    row.appendChild(btn);
+    row.appendChild(copyBtn);
+
+    const speakBtn = document.createElement('button');
+    speakBtn.className = 'icon-btn placeholder';
+    speakBtn.title      = 'Read aloud — coming soon';
+    speakBtn.innerHTML  = ICON_SPEAK;
+    row.appendChild(speakBtn);
+
+    const moreBtn = document.createElement('button');
+    moreBtn.className = 'icon-btn placeholder';
+    moreBtn.title      = 'More — coming soon';
+    moreBtn.innerHTML  = ICON_MORE;
+    row.appendChild(moreBtn);
 
     if (meta && settings.showTokenStats) {
       const span  = document.createElement('span');
+      span.className = 'msg-stats';
       const parts = [];
       if (meta.eval_count)    parts.push(`${meta.eval_count} tokens`);
       if (meta.elapsed != null) parts.push(`${(meta.elapsed / 1000).toFixed(1)}s`);
@@ -1161,6 +1191,13 @@ function buildMeta(role, content, meta) {
     }
   }
   return row;
+}
+
+function buildBrandMark() {
+  const mark = document.createElement('div');
+  mark.className = 'brand-mark';
+  mark.innerHTML = '<img src="/favicon.ico" alt="">';
+  return mark;
 }
 
 function applyMarkdown(el, text) {
@@ -1503,6 +1540,7 @@ async function send() {
   const finalResponse = (parsed.response || '') + (stopped ? '\n\n*(stopped)*' : '');
   applyMarkdown(responseDiv, finalResponse);
   wrap.appendChild(buildMeta('assistant', parsed.response || '', doneMeta));
+  wrap.appendChild(buildBrandMark());
 
   const asstMsg = { id: uid(), role: 'assistant', content: parsed.response || '', thinking: parsed.thinking, meta: doneMeta };
   thread.messages.push(asstMsg);
@@ -1522,6 +1560,51 @@ async function send() {
 
 // ── Chat — events ─────────────────────────────────────────────────────────────
 newChatBtn.addEventListener('click', createThread);
+
+sidebarToggleBtn.addEventListener('click', () => {
+  chatSidebar.classList.toggle('collapsed');
+});
+
+function closeToolbarMenus() {
+  threadSwitcherMenu.hidden = true;
+  toolbarMoreMenu.hidden    = true;
+}
+
+threadSwitcherBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  const opening = threadSwitcherMenu.hidden;
+  closeToolbarMenus();
+  if (!opening) return;
+
+  threadSwitcherMenu.innerHTML = '';
+  state.threads.filter(t => t.name !== '__brain__').forEach(t => {
+    const li = document.createElement('li');
+    li.textContent = t.name;
+    li.className   = t.id === state.activeId ? 'active' : '';
+    li.addEventListener('click', () => { switchThread(t.id); closeToolbarMenus(); });
+    threadSwitcherMenu.appendChild(li);
+  });
+  const newLi = document.createElement('li');
+  newLi.className   = 'new-chat-item';
+  newLi.textContent = '+ New chat';
+  newLi.addEventListener('click', () => { createThread(); closeToolbarMenus(); });
+  threadSwitcherMenu.appendChild(newLi);
+  threadSwitcherMenu.hidden = false;
+});
+
+toolbarMoreBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  const opening = toolbarMoreMenu.hidden;
+  closeToolbarMenus();
+  toolbarMoreMenu.hidden = !opening;
+});
+
+systemPromptToggleBtn.addEventListener('click', () => {
+  systemPromptPanel.open = !systemPromptPanel.open;
+  closeToolbarMenus();
+});
+
+document.addEventListener('click', closeToolbarMenus);
 
 modelSelect.addEventListener('change', () => {
   state.model = modelSelect.value;

@@ -245,14 +245,26 @@ POST /api/system/stop       no body → {ok: true}
     Pipeline Runs" (`GET /api/pipeline-runs/recent`, click → Pipelines)
 
   **Chat**
-  - Thread list sidebar: create, switch, delete threads
-  - Toolbar: Agent dropdown + Model dropdown + Clear button
+  - Thread list sidebar: create, switch, delete threads; collapsible via a
+    toggle in the top bar (`#sidebar.collapsed`)
+  - Slim top bar: thread-name dropdown (switch/create threads) on the left;
+    an overflow "⋯" menu (Clear chat, System prompt toggle) on the right
+  - Agent dropdown + Model dropdown live in the composer as pill selects,
+    not the top bar
   - Collapsible system prompt textarea (persisted per-thread in DB)
   - Streaming chat via ReadableStream (NDJSON)
   - Thinking block: native chunk.message.thinking field (Ollama ≥0.6)
     with <think> tag fallback; toggle-able in Settings
   - Markdown + Prism.js syntax highlighting (JS/TS/Python/Bash/CSS/JSON/SQL/HTML)
-  - Copy button + token count + elapsed time + t/s per assistant message
+  - Assistant messages render as flat text (no bubble card); user messages
+    are a solid dark pill
+  - Per-message icon row: Copy (functional) + Speak/More (visual
+    placeholders, "coming soon" tooltip, no backing behavior) + token
+    count/elapsed/t/s when enabled; a small favicon brand mark follows
+    each completed assistant reply
+  - Composer is a single rounded pill: textarea, then attach file/attach
+    folder/mic (placeholders) + Agent/Model pill selects + Send
+    (swaps to Abandon while generating)
   - Abandon button (AbortController) to cancel in-flight request
   - Prompt timeout (AbortController + setTimeout, default 5h, 0 = disabled)
   - "/" shortcut to focus input; auto-growing textarea
