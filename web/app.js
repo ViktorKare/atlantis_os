@@ -256,6 +256,43 @@ document.getElementById('clear-data-btn').addEventListener('click', async () => 
   location.reload();
 });
 
+document.getElementById('system-update-btn').addEventListener('click', () => {
+  document.getElementById('system-update-file').click();
+});
+
+document.getElementById('system-update-file').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  if (!confirm(`Update Atlantis from ${file.name}? The app will restart when this finishes.`)) return;
+  try {
+    const buf = await file.arrayBuffer();
+    const res = await fetch('/api/system/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: buf,
+    });
+    const data = await res.json();
+    if (data.error) { alert(`Update failed: ${data.error}`); return; }
+    alert('Update applied — restarting now.');
+  } catch (err) {
+    alert(`Update failed: ${err.message}`);
+  } finally {
+    e.target.value = '';
+  }
+});
+
+document.getElementById('system-restart-btn').addEventListener('click', async () => {
+  if (!confirm('Restart Atlantis now?')) return;
+  await api('POST', '/api/system/restart', {}).catch(() => {});
+  alert('Restarting — this page will stop responding for a few seconds.');
+});
+
+document.getElementById('system-stop-btn').addEventListener('click', async () => {
+  if (!confirm('Stop Atlantis? You will need to run start.sh/start.command/start.bat to bring it back up.')) return;
+  await api('POST', '/api/system/stop', {}).catch(() => {});
+  alert('Stopping now.');
+});
+
 // ── Agents ────────────────────────────────────────────────────────────────────
 async function loadAgents() {
   try { agents = await api('GET', '/api/agents'); } catch (_) {}
@@ -4664,6 +4701,7 @@ document.getElementById('code-new-dir-btn').addEventListener('click', async () =
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   await Promise.all([loadSettings(), loadAgents(), loadTasks(), load(), loadHosts()]);
+  maybeShowWelcomeOverlay();
   await fetchModels();
   refreshAgentDropdown();
   // Restore last active thread's model/agent
@@ -4676,6 +4714,17 @@ async function init() {
   else { renderSidebar(); renderChat(); }
   initHome();
 }
+
+function maybeShowWelcomeOverlay() {
+  if (settings.welcomeDismissed) return;
+  document.getElementById('welcome-overlay').hidden = false;
+}
+
+document.getElementById('welcome-dismiss-btn').addEventListener('click', async () => {
+  settings.welcomeDismissed = true;
+  document.getElementById('welcome-overlay').hidden = true;
+  await api('POST', '/api/settings', { welcomeDismissed: true }).catch(() => {});
+});
 
 // ── Debug panel ───────────────────────────────────────────────────────────────
 

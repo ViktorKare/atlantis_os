@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 cd "$(dirname "$0")"
-python3 launcher.py --restart
+python3 launcher.py --stop

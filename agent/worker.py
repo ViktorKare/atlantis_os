@@ -7,7 +7,8 @@ Polls the jobs table and executes pipeline runs in the background.
 import json, re, sqlite3, time, datetime, difflib, hashlib, urllib.request, urllib.parse, urllib.error, signal, subprocess, sys, contextlib
 from pathlib import Path
 
-DB_FILE  = Path('/home/viktor/.local/share/atlantis/data.db')
+BASE_DIR = Path(__file__).parent          # agent/
+DB_FILE  = BASE_DIR.parent / 'data' / 'data.db'
 RUNNING  = True
 
 # ── DB ────────────────────────────────────────────────────────────────────────
@@ -137,7 +138,7 @@ def web_fetch_core(url):
 def get_fs_root():
     with db_session() as db:
         row = db.execute('SELECT root_path FROM code_sessions WHERE id=?', ('default',)).fetchone()
-    return Path(row['root_path'] if row else '/home/viktor/library/projects')
+    return Path(row['root_path']) if row and row['root_path'] else Path.home()
 
 # ── Workspace versioning ──────────────────────────────────────────────────────
 # The workspace is a git repo so revision runs edit real files against real

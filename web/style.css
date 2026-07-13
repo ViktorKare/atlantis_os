@@ -3919,3 +3919,33 @@ button:not(:disabled):active {
     transition-duration: 0.01ms !important;
   }
 }
+
+.welcome-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+}
+
+.welcome-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 32px;
+  max-width: 480px;
+  color: var(--text);
+}
+
+.welcome-card h2 {
+  margin-top: 0;
+  color: var(--accent);
+}
+
+.welcome-card p {
+  color: var(--text-dim);
+  line-height: 1.5;
+}

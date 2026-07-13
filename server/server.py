@@ -3,17 +3,40 @@
 Ollama UI — local server + SQLite persistence + task scheduler.
 Run with: python3 server.py
 """
+from __future__ import annotations
 import json, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib, concurrent.futures, socket
 from pathlib import Path
 
-PORT           = 5000
-CERT_FILE      = Path('/home/viktor/.local/share/atlantis/certs/192.168.1.240.pem')
-KEY_FILE       = Path('/home/viktor/.local/share/atlantis/certs/192.168.1.240-key.pem')
-BASE_DIR       = Path(__file__).parent
-DB_FILE        = Path('/home/viktor/.local/share/atlantis/data.db')
-PLANS_DIR      = BASE_DIR / 'plans'
-ZONE_DIR        = Path('/home/viktor/library/projects/zone')
-PROJECTS_DIR    = ZONE_DIR / 'projects'
+BASE_DIR       = Path(__file__).parent           # server/
+ROOT_DIR       = BASE_DIR.parent                  # repo root
+WEB_DIR        = ROOT_DIR / 'web'
+DATA_DIR       = ROOT_DIR / 'data'
+CERT_FILE      = DATA_DIR / 'certs' / 'cert.pem'
+KEY_FILE       = DATA_DIR / 'certs' / 'key.pem'
+DB_FILE        = DATA_DIR / 'data.db'
+PLANS_DIR      = ROOT_DIR / 'plans'
+ZONE_DIR       = DATA_DIR / 'zone'
+PROJECTS_DIR   = ZONE_DIR / 'projects'
+
+CONFIG_FILE    = ROOT_DIR / 'atlantis.config.json'
+DEFAULT_CONFIG = {'port': 5000, 'root_path': str(Path.home())}
+
+def load_config():
+    if not CONFIG_FILE.exists():
+        return dict(DEFAULT_CONFIG)
+    try:
+        cfg = json.loads(CONFIG_FILE.read_text())
+        if not isinstance(cfg, dict):
+            return dict(DEFAULT_CONFIG)
+        return {**DEFAULT_CONFIG, **cfg}
+    except (json.JSONDecodeError, OSError):
+        return dict(DEFAULT_CONFIG)
+
+_config = load_config()
+PORT    = _config['port']
+
+RESTART_FLAG = DATA_DIR / '.restart'
+STOP_FLAG    = DATA_DIR / '.stop'
 
 DEFAULT_OLLAMA_ENDPOINT = 'http://192.168.1.205:11434,http://192.168.1.251:11434,http://192.168.1.240:11434,http://localhost:11434'
 _ollama_host_cache = {'url': None, 'ts': 0.0}
@@ -54,6 +77,7 @@ def get_db():
         conn.close()
 
 def init_db():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     with get_db() as db:
         db.executescript('''
             CREATE TABLE IF NOT EXISTS settings (
@@ -157,7 +181,7 @@ def init_db():
             );
             CREATE TABLE IF NOT EXISTS code_sessions (
                 id          TEXT PRIMARY KEY DEFAULT 'default',
-                root_path   TEXT NOT NULL DEFAULT '/home/viktor/library/projects',
+                root_path   TEXT NOT NULL DEFAULT '',
                 open_files  TEXT DEFAULT '[]',
                 active_file TEXT,
                 updated_at  TEXT
@@ -184,6 +208,7 @@ def init_db():
                 created_at  TEXT
             );
         ''')
+        db.execute('UPDATE code_sessions SET root_path=? WHERE id=?', (_config['root_path'], 'default'))
         # Migrations for existing databases
         for sql in [
             'ALTER TABLE agents DROP COLUMN file_access',
@@ -541,7 +566,7 @@ def _scheduler_tick(now):
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(BASE_DIR), **kwargs)
+        super().__init__(*args, directory=str(WEB_DIR), **kwargs)
 
     def do_GET(self):
         p = self.path.split('?')[0]
@@ -629,6 +654,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p == '/api/fs/rename':         self._fs_rename(body)
         elif p == '/api/tools/exec':        self._tools_exec(body)
         elif p == '/api/debug/restart':     self._restart_worker()
+        elif p == '/api/system/update':     self._post_system_update(body)
+        elif p == '/api/system/restart':    self._post_system_restart()
+        elif p == '/api/system/stop':       self._post_system_stop()
         else:
             self.send_error(404)
 
@@ -1395,6 +1423,62 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             self._json({'error': str(e)}, 500)
 
+    UPDATE_REQUIRED_PATHS = ('web/index.html', 'server/server.py', 'agent/worker.py')
+
+    def _post_system_update(self, raw):
+        import tempfile, zipfile, shutil
+        tmp_dir = Path(tempfile.mkdtemp(prefix='atlantis_update_'))
+        try:
+            zip_path = tmp_dir / 'update.zip'
+            zip_path.write_bytes(raw)
+            extract_dir = tmp_dir / 'extract'
+            try:
+                with zipfile.ZipFile(zip_path) as zf:
+                    zf.extractall(extract_dir)
+            except zipfile.BadZipFile:
+                return self._json({'error': 'Not a valid zip file'}, 400)
+            candidates = list(extract_dir.rglob('server/server.py'))
+            if not candidates:
+                return self._json({'error': 'Invalid update: server/server.py not found in zip'}, 400)
+            src_root = candidates[0].parent.parent
+            for rel in self.UPDATE_REQUIRED_PATHS:
+                if not (src_root / rel).exists():
+                    return self._json({'error': f'Invalid update: missing {rel}'}, 400)
+            # Stage all three copies before touching anything live, so a
+            # mid-copy failure (e.g. disk full) never leaves a directory
+            # deleted with no replacement ready.
+            staged = []
+            for name in ('web', 'server', 'agent'):
+                staging = ROOT_DIR / f'{name}.new'
+                if staging.exists():
+                    shutil.rmtree(staging)
+                shutil.copytree(src_root / name, staging)
+                staged.append(name)
+            for name in staged:
+                dest = ROOT_DIR / name
+                staging = ROOT_DIR / f'{name}.new'
+                if dest.exists():
+                    shutil.rmtree(dest)
+                staging.rename(dest)
+            RESTART_FLAG.touch()
+            self._json({'ok': True})
+        except Exception as e:
+            self._json({'error': f'Update failed: {e}'}, 500)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            for name in ('web', 'server', 'agent'):
+                staging = ROOT_DIR / f'{name}.new'
+                if staging.exists():
+                    shutil.rmtree(staging, ignore_errors=True)
+
+    def _post_system_restart(self):
+        RESTART_FLAG.touch()
+        self._json({'ok': True})
+
+    def _post_system_stop(self):
+        STOP_FLAG.touch()
+        self._json({'ok': True})
+
     def _list_jobs(self):
         qs = urllib.parse.parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
         pid = (qs.get('pipeline_id') or [None])[0]
@@ -2053,25 +2137,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _pipe_path_safe(self, raw, work_root=None):
         """Resolve a path for pipeline tool use.
-        If the path is absolute but not under /home, treat it as relative to work_root."""
+        If the path is absolute but not under the home directory, treat it as relative to work_root."""
         if work_root is None:
             work_root = str(self._fs_root())
+        home = str(Path.home().resolve())
         raw = str(raw).strip()
         p = Path(raw)
         if p.is_absolute():
             resolved = p.resolve()
-            if not str(resolved).startswith('/home'):
+            if not str(resolved).startswith(home):
                 # Model generated a wrong absolute path — strip leading / and anchor to work_root
                 resolved = (Path(work_root) / raw.lstrip('/')).resolve()
         else:
             resolved = (Path(work_root) / raw).resolve()
-        if not str(resolved).startswith('/home'):
-            raise PermissionError(f'Path outside /home is not allowed: {resolved}')
+        if not str(resolved).startswith(home):
+            raise PermissionError(f'Path outside home directory is not allowed: {resolved}')
         return resolved
 
     def _tools_exec(self, body):
         """Execute one agent tool server-side for the chat UI. Shares the
         implementation (and path sandbox) with the pipeline worker."""
+        sys.path.insert(0, str(ROOT_DIR / 'agent'))
         import worker as agent_tools
         name = (body or {}).get('name', '')
         args = (body or {}).get('args') or {}
@@ -2330,16 +2416,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _fs_root(self):
         with get_db() as db:
             row = db.execute('SELECT root_path FROM code_sessions WHERE id=?', ('default',)).fetchone()
-        return Path(row['root_path'] if row else '/home/viktor/library/projects')
+        return Path(row['root_path']) if row and row['root_path'] else Path.home()
 
     def _fs_safe(self, rel, root=None):
         if root is None:
             root = self._fs_root().resolve()
         p = Path(rel).resolve() if str(rel).startswith('/') else (root / rel).resolve()
-        # Allow anywhere under /home — code session root is the displayed tree root, not a security fence
-        home = Path('/home').resolve()
+        # Allow anywhere under the user's home directory — code session root is the displayed tree root, not a security fence
+        home = Path.home().resolve()
         if not str(p).startswith(str(home)):
-            raise PermissionError(f'Path outside /home: {p}')
+            raise PermissionError(f'Path outside home directory: {p}')
         return p
 
     def _fs_list(self):
@@ -2443,7 +2529,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     active_file=excluded.active_file,
                     updated_at=excluded.updated_at
             ''', (
-                body.get('rootPath', '/home/viktor/library/projects'),
+                body.get('rootPath') or str(Path.home()),
                 json.dumps(body.get('openFiles', [])),
                 body.get('activeFile'),
                 now,
