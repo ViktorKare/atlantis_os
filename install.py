@@ -132,7 +132,11 @@ def setup_code_server(os_name):
     try:
         with tempfile.TemporaryDirectory() as tmp:
             script_path = Path(tmp) / 'install-code-server.sh'
-            urllib.request.urlretrieve(CODE_SERVER_INSTALL_URL, script_path)
+            # raw.githubusercontent.com (code-server.dev/install.sh redirects
+            # there) 403s Python's default urllib User-Agent.
+            req = urllib.request.Request(CODE_SERVER_INSTALL_URL, headers={'User-Agent': 'atlantis-installer'})
+            with urllib.request.urlopen(req) as resp:
+                script_path.write_bytes(resp.read())
             subprocess.run(
                 ['sh', str(script_path), '--method=standalone', f'--prefix={CODE_SERVER_DIR}'],
                 check=True)
