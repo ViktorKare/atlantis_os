@@ -272,8 +272,10 @@ export function showDiffReview(editorController, fileProvider) {
     view.dispatch({ effects: StateEffect.appendConfig.of([diffField]) });
   }
   const onAccept = () => {
+    const deco = view.state.field(diffField);
+    let pos = view.state.selection.main.head; // fallback if the decoration is somehow empty
+    deco.between(0, view.state.doc.length, (from) => { pos = from; return false; });
     const insertion = MOCK_DIFF.addLines.join('\n') + '\n';
-    const pos = view.state.selection.main.head;
     view.dispatch({ changes: { from: pos, insert: insertion }, effects: clearDiff.of(null) });
     fileProvider.write(path, view.state.doc.toString());
   };
