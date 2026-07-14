@@ -163,7 +163,6 @@ export function initCommandPalette({ addPane, applyLayoutByName, getFocusedEdito
     { label: 'Apply Focus Layout',   run: () => applyLayoutByName('Focus') },
     { label: 'Apply Classic Layout', run: () => applyLayoutByName('Classic') },
     { label: 'Apply Compare Layout', run: () => applyLayoutByName('Compare') },
-    { label: 'Suggest here (demo)',  run: () => showGhostText(getFocusedEditor()) },
     { label: 'Propose mock edit (demo)', run: () => showDiffReview(getFocusedEditor(), fileProvider) },
   ];
 
@@ -221,71 +220,6 @@ export function initCommandPalette({ addPane, applyLayoutByName, getFocusedEdito
       }
     }
   });
-}
-
-const GHOST_TEXT = ' // TODO: handle the empty-array case here';
-
-const setGhost = StateEffect.define();
-const clearGhost = StateEffect.define();
-
-class GhostWidget extends WidgetType {
-  constructor(text) { super(); this.text = text; }
-  eq(other) { return other.text === this.text; }
-  toDOM() {
-    const span = document.createElement('span');
-    span.className = 'code-ghost-text';
-    span.textContent = this.text;
-    return span;
-  }
-}
-
-const ghostField = StateField.define({
-  create() { return Decoration.none; },
-  update(deco, tr) {
-    for (const effect of tr.effects) {
-      if (effect.is(setGhost)) {
-        return Decoration.set([Decoration.widget({ widget: new GhostWidget(GHOST_TEXT), side: 1 }).range(effect.value.pos ?? tr.state.selection.main.head)]);
-      }
-      if (effect.is(clearGhost)) return Decoration.none;
-    }
-    if (tr.docChanged) return Decoration.none;
-    return deco;
-  },
-  provide: f => EditorView.decorations.from(f),
-});
-
-const ghostKeymap = keymap.of([
-  {
-    key: 'Tab',
-    run(view) {
-      const deco = view.state.field(ghostField, false);
-      if (!deco || deco.size === 0) return false;
-      const pos = view.state.selection.main.head;
-      view.dispatch({ changes: { from: pos, insert: GHOST_TEXT }, effects: clearGhost.of(null) });
-      return true;
-    },
-  },
-  {
-    key: 'Escape',
-    run(view) {
-      const deco = view.state.field(ghostField, false);
-      if (!deco || deco.size === 0) return false;
-      view.dispatch({ effects: clearGhost.of(null) });
-      return true;
-    },
-  },
-]);
-
-const installedGhost = new WeakSet();
-
-export function showGhostText(editorController) {
-  const view = editorController?.getView?.();
-  if (!view) return;
-  if (!installedGhost.has(view)) {
-    installedGhost.add(view);
-    view.dispatch({ effects: StateEffect.appendConfig.of([ghostField, Prec.highest(ghostKeymap)]) });
-  }
-  view.dispatch({ effects: setGhost.of({ pos: view.state.selection.main.head }) });
 }
 
 const MOCK_DIFF = {

@@ -1,5 +1,5 @@
-import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from 'https://esm.sh/@codemirror/view@6';
-import { EditorState } from 'https://esm.sh/@codemirror/state@6';
+import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, Decoration, WidgetType } from 'https://esm.sh/@codemirror/view@6';
+import { EditorState, StateField, StateEffect, Prec } from 'https://esm.sh/@codemirror/state@6';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from 'https://esm.sh/@codemirror/commands@6';
 import { syntaxHighlighting, defaultHighlightStyle, indentOnInput, bracketMatching } from 'https://esm.sh/@codemirror/language@6';
 import { javascript } from 'https://esm.sh/@codemirror/lang-javascript@6';
@@ -32,6 +32,90 @@ function detectLangLabel(path) {
     py: 'python', css: 'css', html: 'html', json: 'json', md: 'markdown' }[ext] || 'plaintext';
 }
 
+class GhostWidget extends WidgetType {
+  constructor(text) { super(); this.text = text; }
+  eq(other) { return other.text === this.text; }
+  toDOM() {
+    const span = document.createElement('span');
+    span.className = 'code-ghost-text';
+    span.textContent = this.text;
+    return span;
+  }
+}
+
+const setGhost   = StateEffect.define();
+const clearGhost = StateEffect.define();
+
+const ghostField = StateField.define({
+  create() { return Decoration.none; },
+  update(deco, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setGhost)) {
+        return Decoration.set([Decoration.widget({ widget: new GhostWidget(effect.value.text), side: 1 }).range(effect.value.pos)]);
+      }
+      if (effect.is(clearGhost)) return Decoration.none;
+    }
+    if (tr.docChanged) return Decoration.none;
+    return deco;
+  },
+  provide: f => EditorView.decorations.from(f),
+});
+
+const ghostKeymap = keymap.of([
+  {
+    key: 'Tab',
+    run(view) {
+      const deco = view.state.field(ghostField, false);
+      if (!deco || deco.size === 0) return false;
+      let text = null;
+      deco.between(0, view.state.doc.length, (from, to, value) => { text = value.spec.widget.text; });
+      if (text == null) return false;
+      const pos = view.state.selection.main.head;
+      view.dispatch({ changes: { from: pos, insert: text }, effects: clearGhost.of(null) });
+      return true;
+    },
+  },
+  {
+    key: 'Escape',
+    run(view) {
+      const deco = view.state.field(ghostField, false);
+      if (!deco || deco.size === 0) return false;
+      view.dispatch({ effects: clearGhost.of(null) });
+      return true;
+    },
+  },
+]);
+
+const GHOST_DEBOUNCE_MS = 400;
+const GHOST_PREFIX_MAX  = 2000;
+const GHOST_SUFFIX_MAX  = 500;
+
+function ghostTrigger(path, onDismiss) {
+  let timer = null;
+  let abort = null;
+  return EditorView.updateListener.of(update => {
+    if (!update.docChanged && !update.selectionSet) return;
+    if (timer) clearTimeout(timer);
+    if (abort) abort.abort();
+    update.view.dispatch({ effects: clearGhost.of(null) });
+    if (!update.docChanged) return;
+    const head = update.state.selection.main.head;
+    if (update.state.selection.main.from !== update.state.selection.main.to) return; // no ghost text over a selection
+    timer = setTimeout(async () => {
+      const doc = update.state.doc;
+      const prefix = doc.sliceString(Math.max(0, head - GHOST_PREFIX_MAX), head);
+      const suffix = doc.sliceString(head, Math.min(doc.length, head + GHOST_SUFFIX_MAX));
+      abort = new AbortController();
+      try {
+        const r = await api('POST', '/api/code/ghost-text', { prefix, suffix, path });
+        if (abort.signal.aborted || !r.completion) return;
+        if (update.view.state.selection.main.head !== head) return; // cursor moved since the request went out
+        update.view.dispatch({ effects: setGhost.of({ pos: head, text: r.completion }) });
+      } catch (_) {}
+    }, GHOST_DEBOUNCE_MS);
+  });
+}
+
 const appTheme = EditorView.theme({
   '&': { color: 'var(--text)', backgroundColor: 'var(--bg)', height: '100%', fontSize: '13px' },
   '.cm-content': { fontFamily: "'Fira Code','Cascadia Code',Consolas,monospace", caretColor: 'var(--accent)' },
@@ -52,6 +136,9 @@ function baseExtensions(path, onSave) {
     bracketMatching(),
     indentOnInput(),
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    Prec.highest(ghostKeymap),
+    ghostField,
+    ghostTrigger(path),
     keymap.of([
       { key: 'Mod-s', preventDefault: true, run: () => { onSave(); return true; } },
       ...defaultKeymap, ...historyKeymap, indentWithTab,
