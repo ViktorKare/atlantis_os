@@ -1435,6 +1435,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             'feedbackLoop': bool(row['feedback_loop']) if 'feedback_loop' in row.keys() else True,
             'layout': json.loads(row['layout'] or '{}'),
             'createdAt': row['created_at'],
+            'mode': row['mode'] if 'mode' in row.keys() else 'fixed',
+            'roster': json.loads(row['roster'] or '[]') if 'roster' in row.keys() else [],
+            'verifyCommand': (row['verify_command'] or '') if 'verify_command' in row.keys() else '',
+            'maxTurns': row['max_turns'] if 'max_turns' in row.keys() else 20,
+            'workDir': (row['work_dir'] or '') if 'work_dir' in row.keys() else '',
         }
 
     def _pl_step_out(self, row):
@@ -1756,19 +1761,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         now = datetime.datetime.now().isoformat()
         with get_db() as db:
             db.execute(
-                'INSERT INTO pipelines (id,name,goal,pm_agent_id,pm_model,schedule,pause_on_fail,feedback_loop,layout,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                'INSERT INTO pipelines (id,name,goal,pm_agent_id,pm_model,schedule,pause_on_fail,feedback_loop,layout,created_at,mode,roster,verify_command,max_turns,work_dir) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                 (pid, body.get('name','New Pipeline'), body.get('goal',''),
                  body.get('pmAgentId'), body.get('pmModel',''),
                  json.dumps(body.get('schedule',{'type':'manual'})),
                  1 if body.get('pauseOnFail', True) else 0,
                  1 if body.get('feedbackLoop', True) else 0,
-                 json.dumps(body.get('layout',{})), now)
+                 json.dumps(body.get('layout',{})), now,
+                 body.get('mode', 'fixed'),
+                 json.dumps(body.get('roster', [])),
+                 body.get('verifyCommand', ''),
+                 body.get('maxTurns', 20),
+                 body.get('workDir', ''))
             )
-            # Default start block, so the feedback gate always has a step to loop back to
-            db.execute(
-                'INSERT INTO pipeline_steps (id,pipeline_id,step_index,name,agent_id,agent_name,task,handover_fields,quality_criteria,pass_full_output,agent_input,model_tier,loop_config) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                (str(time.time_ns()), pid, 0, 'Start', None, '', '', '[]', '[]', 0, '', 'local', '{}')
-            )
+            if body.get('mode', 'fixed') == 'fixed':
+                # Default start block, so the feedback gate always has a step to loop back to.
+                # Dynamic pipelines have no pipeline_steps at all.
+                db.execute(
+                    'INSERT INTO pipeline_steps (id,pipeline_id,step_index,name,agent_id,agent_name,task,handover_fields,quality_criteria,pass_full_output,agent_input,model_tier,loop_config) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (str(time.time_ns()), pid, 0, 'Start', None, '', '', '[]', '[]', 0, '', 'local', '{}')
+                )
         self._json({'ok': True, 'id': pid})
 
     def _get_pipeline(self, pid):
@@ -1786,13 +1798,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _put_pipeline(self, pid, body):
         with get_db() as db:
             db.execute('''UPDATE pipelines SET name=?,goal=?,pm_agent_id=?,pm_model=?,
-                          schedule=?,pause_on_fail=?,feedback_loop=?,layout=? WHERE id=?''',
+                          schedule=?,pause_on_fail=?,feedback_loop=?,layout=?,
+                          mode=?,roster=?,verify_command=?,max_turns=?,work_dir=? WHERE id=?''',
                        (body.get('name'), body.get('goal',''),
                         body.get('pmAgentId'), body.get('pmModel',''),
                         json.dumps(body.get('schedule',{'type':'manual'})),
                         1 if body.get('pauseOnFail', True) else 0,
                         1 if body.get('feedbackLoop', True) else 0,
-                        json.dumps(body.get('layout',{})), pid))
+                        json.dumps(body.get('layout',{})),
+                        body.get('mode', 'fixed'),
+                        json.dumps(body.get('roster', [])),
+                        body.get('verifyCommand', ''),
+                        body.get('maxTurns', 20),
+                        body.get('workDir', ''), pid))
         self._json({'ok': True})
 
     def _delete_pipeline(self, pid):
