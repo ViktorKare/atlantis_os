@@ -1,6 +1,3 @@
-import { EditorView, Decoration, WidgetType, keymap } from 'https://esm.sh/@codemirror/view@6';
-import { StateField, StateEffect, Prec } from 'https://esm.sh/@codemirror/state@6';
-
 export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEditor } = {}) {
   bodyEl.innerHTML = `
     <div class="code-chat-toolbar">
@@ -163,7 +160,6 @@ export function initCommandPalette({ addPane, applyLayoutByName, getFocusedEdito
     { label: 'Apply Focus Layout',   run: () => applyLayoutByName('Focus') },
     { label: 'Apply Classic Layout', run: () => applyLayoutByName('Classic') },
     { label: 'Apply Compare Layout', run: () => applyLayoutByName('Compare') },
-    { label: 'Propose mock edit (demo)', run: () => showDiffReview(getFocusedEditor(), fileProvider) },
   ];
 
   let filtered = actions;
@@ -222,65 +218,3 @@ export function initCommandPalette({ addPane, applyLayoutByName, getFocusedEdito
   });
 }
 
-const MOCK_DIFF = {
-  removeLine: 'insufficient input validation',
-  addLines: ['if (!input) return null;', 'const cleaned = input.trim();'],
-};
-
-const setDiff = StateEffect.define();
-const clearDiff = StateEffect.define();
-
-class DiffHunkWidget extends WidgetType {
-  constructor(onAccept, onReject) { super(); this.onAccept = onAccept; this.onReject = onReject; }
-  eq() { return false; }
-  toDOM() {
-    const wrap = document.createElement('div');
-    wrap.className = 'code-diff-hunk';
-    wrap.innerHTML = `
-      <div class="code-diff-line code-diff-remove">− ${MOCK_DIFF.removeLine}</div>
-      ${MOCK_DIFF.addLines.map(l => `<div class="code-diff-line code-diff-add">+ ${l}</div>`).join('')}
-      <div class="code-diff-actions">
-        <button class="code-diff-accept">Accept</button>
-        <button class="code-diff-reject">Reject</button>
-      </div>`;
-    wrap.querySelector('.code-diff-accept').addEventListener('click', () => this.onAccept());
-    wrap.querySelector('.code-diff-reject').addEventListener('click', () => this.onReject());
-    return wrap;
-  }
-}
-
-const diffField = StateField.define({
-  create() { return Decoration.none; },
-  update(deco, tr) {
-    for (const effect of tr.effects) {
-      if (effect.is(setDiff)) {
-        return Decoration.set([Decoration.widget({ widget: effect.value, side: 1, block: true }).range(tr.state.selection.main.head)]);
-      }
-      if (effect.is(clearDiff)) return Decoration.none;
-    }
-    return deco.map(tr.changes);
-  },
-  provide: f => EditorView.decorations.from(f),
-});
-
-const installedDiff = new WeakSet();
-
-export function showDiffReview(editorController, fileProvider) {
-  const view = editorController?.getView?.();
-  const path = editorController?.getActiveFile?.();
-  if (!view || !path) return;
-  if (!installedDiff.has(view)) {
-    installedDiff.add(view);
-    view.dispatch({ effects: StateEffect.appendConfig.of([diffField]) });
-  }
-  const onAccept = () => {
-    const deco = view.state.field(diffField);
-    let pos = view.state.selection.main.head; // fallback if the decoration is somehow empty
-    deco.between(0, view.state.doc.length, (from) => { pos = from; return false; });
-    const insertion = MOCK_DIFF.addLines.join('\n') + '\n';
-    view.dispatch({ changes: { from: pos, insert: insertion }, effects: clearDiff.of(null) });
-    fileProvider.write(path, view.state.doc.toString());
-  };
-  const onReject = () => view.dispatch({ effects: clearDiff.of(null) });
-  view.dispatch({ effects: setDiff.of(new DiffHunkWidget(onAccept, onReject)) });
-}

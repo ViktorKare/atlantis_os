@@ -8,6 +8,7 @@ import { css as cssLang } from 'https://esm.sh/@codemirror/lang-css@6';
 import { html as htmlLang } from 'https://esm.sh/@codemirror/lang-html@6';
 import { json as jsonLang } from 'https://esm.sh/@codemirror/lang-json@6';
 import { markdown as markdownLang } from 'https://esm.sh/@codemirror/lang-markdown@6';
+import { diffLines } from 'https://esm.sh/diff@5';
 
 // If esm.sh import specifiers ever fail to resolve (check the browser console
 // for 404/CORS errors), the spec allows jsdelivr's `+esm` as a fallback CDN,
@@ -123,6 +124,83 @@ function ghostTrigger(path, onDismiss) {
   });
 }
 
+class DiffHunkWidget extends WidgetType {
+  constructor(hunk, onAccept, onReject) { super(); this.hunk = hunk; this.onAccept = onAccept; this.onReject = onReject; }
+  eq() { return false; }
+  toDOM() {
+    const wrap = document.createElement('div');
+    wrap.className = 'code-diff-hunk';
+    const removedLines = this.hunk.removedText ? this.hunk.removedText.replace(/\n$/, '').split('\n') : [];
+    const addedLines   = this.hunk.addedText   ? this.hunk.addedText.replace(/\n$/, '').split('\n')   : [];
+    wrap.innerHTML = `
+      ${removedLines.map(l => `<div class="code-diff-line code-diff-remove">− ${escHtml(l)}</div>`).join('')}
+      ${addedLines.map(l => `<div class="code-diff-line code-diff-add">+ ${escHtml(l)}</div>`).join('')}
+      <div class="code-diff-actions">
+        <button class="code-diff-accept">Accept</button>
+        <button class="code-diff-reject">Reject</button>
+      </div>`;
+    wrap.querySelector('.code-diff-accept').addEventListener('click', () => this.onAccept());
+    wrap.querySelector('.code-diff-reject').addEventListener('click', () => this.onReject());
+    return wrap;
+  }
+}
+
+const setDiff   = StateEffect.define();
+const clearDiff = StateEffect.define();
+
+const diffField = StateField.define({
+  create() { return Decoration.none; },
+  update(deco, tr) {
+    for (const effect of tr.effects) {
+      if (effect.is(setDiff))   return Decoration.set([Decoration.widget({ widget: effect.value.widget, side: 1, block: true }).range(effect.value.pos)]);
+      if (effect.is(clearDiff)) return Decoration.none;
+    }
+    return tr.docChanged ? deco.map(tr.changes) : deco;
+  },
+  provide: f => EditorView.decorations.from(f),
+});
+
+function computeHunks(oldContent, newContent) {
+  const parts = diffLines(oldContent, newContent);
+  const hunks = [];
+  let pos = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (!part.added && !part.removed) { pos += part.value.length; continue; }
+    if (part.removed) {
+      const next = parts[i + 1];
+      const addedText = next?.added ? next.value : '';
+      if (next?.added) i++;
+      hunks.push({ from: pos, to: pos + part.value.length, removedText: part.value, addedText });
+      pos += part.value.length;
+    } else {
+      hunks.push({ from: pos, to: pos, removedText: '', addedText: part.value });
+    }
+  }
+  return hunks;
+}
+
+function shiftHunksAfter(hunks, fromIdx, delta) {
+  return hunks.map((h, i) => (i > fromIdx ? { ...h, from: h.from + delta, to: h.to + delta } : h));
+}
+
+function reviewHunks(view, hunks, idx, fileProvider, path, resolveDone) {
+  if (idx >= hunks.length) {
+    view.dispatch({ effects: clearDiff.of(null) });
+    resolveDone();
+    return;
+  }
+  const hunk = hunks[idx];
+  const onAccept = () => {
+    const delta = hunk.addedText.length - (hunk.to - hunk.from);
+    view.dispatch({ changes: { from: hunk.from, to: hunk.to, insert: hunk.addedText }, effects: clearDiff.of(null) });
+    fileProvider.write(path, view.state.doc.toString());
+    reviewHunks(view, shiftHunksAfter(hunks, idx, delta), idx + 1, fileProvider, path, resolveDone);
+  };
+  const onReject = () => reviewHunks(view, hunks, idx + 1, fileProvider, path, resolveDone);
+  view.dispatch({ effects: setDiff.of({ pos: hunk.from, widget: new DiffHunkWidget(hunk, onAccept, onReject) }) });
+}
+
 const appTheme = EditorView.theme({
   '&': { color: 'var(--text)', backgroundColor: 'var(--bg)', height: '100%', fontSize: '13px' },
   '.cm-content': { fontFamily: "'Fira Code','Cascadia Code',Consolas,monospace", caretColor: 'var(--accent)' },
@@ -145,6 +223,7 @@ function baseExtensions(path, onSave) {
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
     Prec.highest(ghostKeymap),
     ghostField,
+    diffField,
     ghostTrigger(path),
     keymap.of([
       { key: 'Mod-s', preventDefault: true, run: () => { onSave(); return true; } },
@@ -196,11 +275,11 @@ export function createEditorPane(bodyEl, { fileProvider, onFocus } = {}) {
     );
   }
 
-  async function openFile(path) {
+  async function openFile(path, { initialContent } = {}) {
     if (currentPath && view) states.set(currentPath, view.state);
     let state = states.get(path);
     if (!state) {
-      const content = await fileProvider.read(path);
+      const content = initialContent !== undefined ? (initialContent ?? '') : await fileProvider.read(path);
       state = EditorState.create({ doc: content, extensions: baseExtensions(path, save) });
       states.set(path, state);
     }
@@ -214,6 +293,20 @@ export function createEditorPane(bodyEl, { fileProvider, onFocus } = {}) {
     langLabel.textContent = detectLangLabel(path);
     renderTabs();
     view.focus();
+  }
+
+  async function proposeDiff(newContent, { autoAccept = false } = {}) {
+    if (!view || !currentPath) return { applied: false, hunkCount: 0 };
+    const oldContent = view.state.doc.toString();
+    const hunks = computeHunks(oldContent, newContent);
+    if (!hunks.length) return { applied: false, hunkCount: 0 };
+    if (autoAccept) {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: newContent } });
+      await fileProvider.write(currentPath, newContent);
+      return { applied: true, hunkCount: hunks.length };
+    }
+    reviewHunks(view, hunks, 0, fileProvider, currentPath, () => {});
+    return { applied: false, hunkCount: hunks.length };
   }
 
   function closeTab(path) {
@@ -235,6 +328,7 @@ export function createEditorPane(bodyEl, { fileProvider, onFocus } = {}) {
   return {
     el: bodyEl,
     openFile,
+    proposeDiff,
     getActiveFile: () => currentPath,
     getOpenFiles: () => [...states.keys()],
     getView: () => view,
