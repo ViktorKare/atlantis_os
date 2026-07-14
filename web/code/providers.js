@@ -88,3 +88,33 @@ export class MockAIProvider {
     }
   }
 }
+
+export class RealFileProvider {
+  async list(path) {
+    const r = await api('GET', `/api/fs?path=${encodeURIComponent(path || '')}`);
+    if (r.error) throw new Error(r.error);
+    return (r.entries || []).map(e => ({
+      name: e.name,
+      type: e.type,
+      path: path ? `${path.replace(/\/$/, '')}/${e.name}` : e.name,
+    }));
+  }
+
+  async read(path) {
+    const r = await api('GET', `/api/fs/read?path=${encodeURIComponent(path)}`);
+    if (r.error) throw new Error(r.error);
+    return r.content ?? '';
+  }
+
+  async write(path, content) {
+    const r = await api('POST', '/api/fs/write', { path, content });
+    if (r.error) throw new Error(r.error);
+    return { created: true };
+  }
+
+  async mkdir(path) {
+    const r = await api('POST', '/api/fs/mkdir', { path });
+    if (r.error) throw new Error(r.error);
+    return { created: true };
+  }
+}

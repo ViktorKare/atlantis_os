@@ -1,9 +1,10 @@
-import { MockFileProvider, MockAIProvider } from './providers.js';
+import { RealFileProvider, RealAIProvider } from './providers.js';
 import { createEditorPane, createTreePane } from './editor.js';
 import { createChatPane, initCommandPalette } from './ai-panel.js';
 
-const fileProvider = new MockFileProvider();
-const aiProvider   = new MockAIProvider();
+const fileProvider = new RealFileProvider();
+const aiProvider   = new RealAIProvider();
+let rootLabel = 'project';
 
 const PANE_TITLES = { chat: 'Chat', editor: 'Editor', tree: 'File Tree' };
 const DEFAULT_WIDTHS = { chat: 340, editor: 640, tree: 240 };
@@ -53,7 +54,7 @@ function mountPane(pane) {
   } else if (pane.type === 'editor') {
     pane.controller = createEditorPane(body, { fileProvider, onFocus: () => { focusedEditorPaneId = pane.id; } });
   } else if (pane.type === 'tree') {
-    pane.controller = createTreePane(body, { fileProvider, openInEditor: openInNearestEditor });
+    pane.controller = createTreePane(body, { fileProvider, openInEditor: openInNearestEditor, rootPath: '', rootLabel });
   }
 }
 
@@ -284,6 +285,10 @@ let inited = false;
 async function initCode() {
   if (inited) return;
   inited = true;
+  try {
+    const session = await api('GET', '/api/code-session');
+    rootLabel = (session.root_path || '').split('/').filter(Boolean).pop() || '/';
+  } catch (_) {}
   wireStaticControls();
   initCommandPalette({ addPane, applyLayoutByName, getFocusedEditor });
   const saved = await loadPersisted();

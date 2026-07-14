@@ -148,10 +148,10 @@ export function createEditorPane(bodyEl, { fileProvider, onFocus } = {}) {
   };
 }
 
-export function createTreePane(bodyEl, { fileProvider, openInEditor } = {}) {
+export function createTreePane(bodyEl, { fileProvider, openInEditor, rootPath = '', rootLabel = 'project' } = {}) {
   bodyEl.innerHTML = `
     <div class="code-tree-header">
-      <span class="code-root-label">project</span>
+      <span class="code-root-label">${rootLabel}</span>
     </div>
     <div class="code-tree"></div>`;
   const treeEl = bodyEl.querySelector('.code-tree');
@@ -192,7 +192,7 @@ export function createTreePane(bodyEl, { fileProvider, openInEditor } = {}) {
     container.appendChild(ul);
   }
 
-  renderLevel(treeEl, '/project');
+  renderLevel(treeEl, rootPath);
 
   return { destroy() { bodyEl.innerHTML = ''; } };
 }
