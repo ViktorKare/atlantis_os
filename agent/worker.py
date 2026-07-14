@@ -519,6 +519,43 @@ def job_cancel_requested(job_id):
         row = db.execute('SELECT status FROM jobs WHERE id=?', (job_id,)).fetchone()
     return bool(row) and row['status'] == 'cancelling'
 
+# ── Dynamic pipeline turns ──────────────────────────────────────────────────
+
+def insert_turn(run_id, turn_index, agent_id, agent_name, action, instructions='', reasoning=''):
+    tid = str(time.time_ns())
+    with db_session() as db:
+        db.execute(
+            'INSERT INTO pipeline_turns '
+            '(id,run_id,turn_index,agent_id,agent_name,action,instructions,reasoning,status) '
+            'VALUES (?,?,?,?,?,?,?,?,?)',
+            (tid, run_id, turn_index, agent_id, agent_name, action, instructions, reasoning, 'running')
+        )
+    return tid
+
+def update_turn(run_id, turn_index, **kwargs):
+    with db_session() as db:
+        fields = ', '.join(f'{k}=?' for k in kwargs)
+        db.execute(
+            f'UPDATE pipeline_turns SET {fields} WHERE run_id=? AND turn_index=?',
+            (*kwargs.values(), run_id, turn_index)
+        )
+
+def supersede_turns_after(run_id, root_cause_index, new_turn_index):
+    with db_session() as db:
+        db.execute(
+            'UPDATE pipeline_turns SET superseded_by=? '
+            'WHERE run_id=? AND turn_index>? AND superseded_by IS NULL',
+            (new_turn_index, run_id, root_cause_index)
+        )
+
+def get_live_turns(run_id):
+    with db_session() as db:
+        rows = rows_to_list(db.execute(
+            'SELECT * FROM pipeline_turns WHERE run_id=? AND superseded_by IS NULL ORDER BY turn_index',
+            (run_id,)
+        ).fetchall())
+    return rows
+
 _HW_NUM_CTX = None
 
 def detect_num_ctx(cfg):
