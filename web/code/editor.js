@@ -71,7 +71,7 @@ function openFolderPicker(fileProvider, startPath, onSelect) {
         pathEl.textContent = browsePath || '/';
         const dirs = entries.filter(e => e.type === 'dir');
         listEl.innerHTML = dirs.length
-          ? dirs.map(e => `<li class="code-folder-picker-item" data-path="${e.path}">${e.name}</li>`).join('')
+          ? dirs.map(e => `<li class="code-folder-picker-item" data-path="${escHtml(e.path)}">${escHtml(e.name)}</li>`).join('')
           : '<li class="code-folder-picker-empty">No subfolders</li>';
         listEl.querySelectorAll('.code-folder-picker-item').forEach(li =>
           li.addEventListener('click', () => load(li.dataset.path))

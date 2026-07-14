@@ -73,11 +73,17 @@ file authoritative and the DB row a synced cache of it — this is what the
 Code Editor's `_fs_root()` reads. `agent/worker.py` does **not** read
 `atlantis.config.json` directly; it only ever sees `root_path` via the DB,
 so server/server.py is the single writer that keeps the two in sync.
-Because of this mirror-on-boot, changing the workspace root via the Code
-Editor UI (`PUT /api/code-session`) only changes the DB row and is silently
-overwritten by the JSON file's value on the next server restart — a user who
-wants a permanent workspace root change must edit `atlantis.config.json`
-directly, not just the in-app setting.
+Changing the workspace root via the Code Editor's "Change folder…" button
+(`PUT /api/code-session {rootPath}`) now writes both directions: the DB row
+(as before) **and**, via `_write_config_root_path()`, `atlantis.config.json`
+itself — so the change survives a server restart instead of being silently
+reverted by the boot-time mirror. `_put_code_session` only rewrites the config
+file when a truthy `rootPath` is supplied and passes validation (must resolve
+under the home-directory fence via `_fs_safe()` and must be an existing
+directory — 400 with `{"error": ...}` otherwise, or 500 with
+`{"error": ...}` if the config file itself can't be written); a request with
+no `rootPath` behaves as before (falls back to `str(Path.home())`, no config
+write).
 
 ### Installer & process supervision
 
@@ -399,6 +405,23 @@ POST /api/system/stop       no body → {ok: true}
     `MockAIProvider` remain in `providers.js` (unused by `panes.js`, kept
     for reference/future reuse) — `RealAIProvider.listSkills()` still
     delegates to `MockAIProvider`'s static skill list.
+  - Change workspace folder: the File-Tree pane header (`createTreePane`,
+    `web/code/editor.js`) shows the current root's folder name next to a
+    "Change…" button; clicking it opens a modal (`openFolderPicker()`) that
+    browses directories only (files filtered out) via the same
+    `fileProvider.list(path)` the tree itself uses, with Up/"Select this
+    folder"/Cancel controls — an in-modal error (e.g. a 400 from server-side
+    validation) shows inline and keeps the modal open rather than closing it.
+    Selecting a folder calls `panes.js`'s `changeWorkspaceFolder(newPath)`,
+    which `PUT`s `/api/code-session {rootPath}`, and on success updates every
+    mounted tree pane in the current layout (`refresh(newRootPath,
+    newRootLabel)` — re-renders that pane's listing and header label at the
+    new root) and clears every mounted editor pane's open tabs
+    (`closeAllTabs()`), matching the "start clean on folder switch" decision;
+    `changeWorkspaceFolder` also updates `panes.js`'s in-memory `rootPath`/
+    `rootLabel` so newly added panes and the next session reload pick up the
+    new root. See "atlantis.config.json" above for the server-side validation
+    and persistence contract.
 
   **Debug** (job/worker monitor + system reference — the monitor promoted out
   of Pipelines, the reference panel absorbed from the now-removed standalone
@@ -640,7 +663,12 @@ POST /api/system/stop       no body → {ok: true}
   POST /api/fs/mkdir              create directory
   POST /api/fs/rename             rename file
   GET  /api/code-session          active code session
-  PUT  /api/code-session          update session
+  PUT  /api/code-session          update session; a truthy rootPath is validated
+                                  (must exist, be a directory, and resolve under
+                                  the home-directory fence) — 400 {"error"} if
+                                  not, 500 {"error"} if atlantis.config.json can't
+                                  be written; on success the new root_path is
+                                  written to both the DB row and the config file
   GET  /api/code-layouts          list saved layouts → [{name, panes}]
   POST /api/code-layouts          upsert a named layout, body: {name, panes} →
                                   {ok:true} | {error:'name required'} (400)
@@ -785,6 +813,13 @@ POST /api/system/stop       no body → {ok: true}
         Path.home() instead of a hardcoded /home fence (fixes macOS/Windows);
         server/server.py has `from __future__ import annotations` for Python
         3.9 compatibility (the module uses `X | None` type hints)
+  ✓ 32. Change workspace folder — File-Tree pane "Change…" button +
+        folder-picker modal (existing directories only, home-directory
+        fence); PUT /api/code-session validates a provided rootPath and, on
+        success, persists it to both code_sessions and atlantis.config.json
+        (_write_config_root_path()) so it survives a restart; on success all
+        mounted tree panes reload at the new root and all editor panes close
+        their tabs (closeAllTabs())
 
 ---
 
