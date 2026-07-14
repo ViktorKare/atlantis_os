@@ -818,7 +818,7 @@ async function runTask(id) {
       if (turnToolCalls.length > 0) {
         msgs.push({ role: 'assistant', content: '', tool_calls: turnToolCalls });
         for (const tc of turnToolCalls) {
-          const result = await executeTool(tc.function.name, tc.function.arguments ?? {});
+          const result = await executeTool(tc.function.name, tc.function.arguments ?? {}, null);
           msgs.push({ role: 'tool', content: String(result) });
         }
         run.output = '';
@@ -1316,7 +1316,7 @@ function buildToolManifest(toolPerms) {
   return lines.join('\n');
 }
 
-async function executeTool(name, params) {
+async function executeTool(name, params, targetWindow) {
   try {
     switch (name) {
       case 'read_file': {
@@ -1343,8 +1343,11 @@ async function executeTool(name, params) {
         return typeof r === 'string' ? r : JSON.stringify(r, null, 2);
       }
       case 'ask_user': {
+        if (!targetWindow) {
+          return 'No interactive surface available to ask the user in this context; proceed using your best judgement.';
+        }
         return await new Promise(resolve => {
-          renderAskUserCard(chatWindow, params, answer => resolve(answer));
+          renderAskUserCard(targetWindow, params, answer => resolve(answer));
         });
       }
       default: {
@@ -1442,8 +1445,8 @@ function renderAskUserCard(chatWin, params, onAnswer) {
     wrap.querySelector('.ask-user-opts').insertAdjacentElement('afterend', doneBtn);
   }
   const input = wrap.querySelector('.ask-user-input');
-  const submit = wrap.querySelector('.ask-user-submit');
-  if (input && submit && !multi) {
+  const submit = wrap.querySelector('.ask-user-free .ask-user-submit');
+  if (input && submit) {
     submit.addEventListener('click', () => { if (input.value.trim()) finish(input.value.trim()); });
     input.addEventListener('keydown', e => { if (e.key === 'Enter' && input.value.trim()) finish(input.value.trim()); });
   }
@@ -1592,7 +1595,7 @@ async function send() {
         apiMessages.push({ role: 'assistant', content: '', tool_calls: turnToolCalls });
         for (let i = 0; i < turnToolCalls.length; i++) {
           const tc = turnToolCalls[i];
-          const result = await executeTool(tc.function.name, tc.function.arguments ?? {});
+          const result = await executeTool(tc.function.name, tc.function.arguments ?? {}, chatWindow);
           renderToolResultBubble(toolWrap, i, result);
           apiMessages.push({ role: 'tool', content: String(result) });
         }
@@ -4365,7 +4368,7 @@ async function sendHomeBrainMessage(text) {
         apiMessages.push({ role: 'assistant', content: '', tool_calls: turnToolCalls });
         for (let i = 0; i < turnToolCalls.length; i++) {
           const tc = turnToolCalls[i];
-          const result = await executeTool(tc.function.name, tc.function.arguments ?? {});
+          const result = await executeTool(tc.function.name, tc.function.arguments ?? {}, win);
           renderToolResultBubble(toolWrap, i, result);
           apiMessages.push({ role: 'tool', content: String(result) });
         }
