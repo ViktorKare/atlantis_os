@@ -33,6 +33,10 @@ function getFocusedEditor() {
   return first ? first.controller : null;
 }
 
+function isFileOpenAnywhere(path) {
+  return panes.some(p => p.type === 'editor' && p.controller?.getOpenFiles?.().includes(path));
+}
+
 function openInNearestEditor(path) {
   let target = panes.find(p => p.id === focusedEditorPaneId && p.type === 'editor');
   if (!target) target = panes.find(p => p.type === 'editor');
@@ -45,7 +49,7 @@ function openInNearestEditor(path) {
 function mountPane(pane) {
   const body = pane.el.querySelector('.code-pane-body');
   if (pane.type === 'chat') {
-    pane.controller = createChatPane(body, { aiProvider, fileProvider, getFocusedEditor });
+    pane.controller = createChatPane(body, { aiProvider, fileProvider, getFocusedEditor, isFileOpenAnywhere });
   } else if (pane.type === 'editor') {
     pane.controller = createEditorPane(body, { fileProvider, onFocus: () => { focusedEditorPaneId = pane.id; } });
   } else if (pane.type === 'tree') {
@@ -215,7 +219,7 @@ function saveCurrentAsLayout() {
   customLayouts = customLayouts.filter(l => l.name !== layout.name);
   customLayouts.push(layout);
   currentLayoutName = layout.name;
-  persistCustomLayouts();
+  api('POST', '/api/code-layouts', { name: layout.name, panes: layout.panes }).catch(() => {});
   renderLayoutBar();
   persistCurrentLayout();
 }
@@ -223,41 +227,42 @@ function saveCurrentAsLayout() {
 function deleteCustomLayout(name) {
   customLayouts = customLayouts.filter(l => l.name !== name);
   if (currentLayoutName === name) currentLayoutName = null;
-  persistCustomLayouts();
+  api('DELETE', `/api/code-layouts/${encodeURIComponent(name)}`).catch(() => {});
   renderLayoutBar();
   persistCurrentLayout();
 }
 
 function persistCurrentLayout() {
-  localStorage.setItem('codeCurrentLayout', JSON.stringify({
-    name: currentLayoutName,
+  api('PUT', '/api/code-layout-state', {
+    currentLayoutName: currentLayoutName,
     panes: panes.map(p => ({ type: p.type, width: p.width })),
-  }));
+    preferredWidths,
+  }).catch(() => {});
 }
 function persistCustomLayouts() {
-  localStorage.setItem('codeCustomLayouts', JSON.stringify(customLayouts));
+  // code_layouts rows are upserted individually (see saveCurrentAsLayout/deleteCustomLayout) —
+  // nothing to persist in bulk here. Kept as a no-op call site so callers don't need to change.
 }
 function persistPreferredWidths() {
-  localStorage.setItem('codePreferredWidths', JSON.stringify(preferredWidths));
+  persistCurrentLayout(); // preferredWidths travels inside the same code_layout_state row
 }
 
-function loadPersisted() {
+async function loadPersisted() {
   try {
-    const w = JSON.parse(localStorage.getItem('codePreferredWidths') || 'null');
-    if (w) {
-      const merged = { ...DEFAULT_WIDTHS, ...w };
+    const layouts = await api('GET', '/api/code-layouts');
+    customLayouts = layouts.map(l => ({ name: l.name, builtin: false, panes: l.panes }));
+  } catch (_) {}
+  try {
+    const state = await api('GET', '/api/code-layout-state');
+    if (state.preferredWidths && Object.keys(state.preferredWidths).length) {
+      const merged = { ...DEFAULT_WIDTHS, ...state.preferredWidths };
       preferredWidths = Object.fromEntries(Object.entries(merged).map(([type, width]) => [type, clampWidth(width)]));
     }
+    if (Array.isArray(state.panes) && state.panes.length) {
+      return { name: state.currentLayoutName, panes: state.panes };
+    }
   } catch (_) {}
-  try {
-    const c = JSON.parse(localStorage.getItem('codeCustomLayouts') || 'null');
-    if (Array.isArray(c)) customLayouts = c;
-  } catch (_) {}
-  try {
-    return JSON.parse(localStorage.getItem('codeCurrentLayout') || 'null');
-  } catch (_) {
-    return null;
-  }
+  return null;
 }
 
 function wireStaticControls() {
@@ -276,12 +281,12 @@ function wireStaticControls() {
 }
 
 let inited = false;
-function initCode() {
+async function initCode() {
   if (inited) return;
   inited = true;
   wireStaticControls();
-  initCommandPalette({ addPane, applyLayoutByName, getFocusedEditor, fileProvider });
-  const saved = loadPersisted();
+  initCommandPalette({ addPane, applyLayoutByName, getFocusedEditor });
+  const saved = await loadPersisted();
   if (saved && Array.isArray(saved.panes) && saved.panes.length) {
     panes = saved.panes.map(p => ({ id: uid(), type: p.type, width: clampWidth(p.width || DEFAULT_WIDTHS[p.type]) }));
     currentLayoutName = saved.name || null;
