@@ -330,10 +330,20 @@ export function createEditorPane(bodyEl, { fileProvider, onFocus } = {}) {
     renderTabs();
   }
 
+  function closeAllTabs() {
+    states.clear();
+    currentPath = null;
+    view?.destroy();
+    view = null;
+    langLabel.textContent = 'plaintext';
+    renderTabs();
+  }
+
   return {
     el: bodyEl,
     openFile,
     proposeDiff,
+    closeAllTabs,
     getActiveFile: () => currentPath,
     getOpenFiles: () => [...states.keys()],
     getView: () => view,
