@@ -107,7 +107,14 @@ function ghostTrigger(path, onDismiss) {
       const suffix = doc.sliceString(head, Math.min(doc.length, head + GHOST_SUFFIX_MAX));
       abort = new AbortController();
       try {
-        const r = await api('POST', '/api/code/ghost-text', { prefix, suffix, path });
+        const res = await fetch('/api/code/ghost-text', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prefix, suffix, path }),
+          signal: abort.signal,
+        });
+        if (!res.ok) throw new Error(`POST /api/code/ghost-text → ${res.status}`);
+        const r = await res.json();
         if (abort.signal.aborted || !r.completion) return;
         if (update.view.state.selection.main.head !== head) return; // cursor moved since the request went out
         update.view.dispatch({ effects: setGhost.of({ pos: head, text: r.completion }) });
