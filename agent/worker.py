@@ -643,6 +643,65 @@ def ask_orchestrator(pipeline, roster_agents, turns, workspace_diff, router, cfg
                         f'Try again — respond ONLY with the JSON decision.'}]
     return None, 'orchestrator failed to produce a valid decision after 3 attempts'
 
+def run_verification(pipeline, roster_agents, work_root, run_llm_fn, turn_index):
+    """Returns (status, output, tier). Tier 1 = real command, tier 2 = QA-role
+    agent's independent judgment, tier 3 = no ground truth available — the
+    orchestrator's own stated reasoning (already on the turn record) is the
+    only justification for 'done' in that case."""
+    verify_command = (pipeline.get('verify_command') or '').strip()
+    if verify_command:
+        result = run_command_core(verify_command, cwd=None, timeout=120, work_root=work_root)
+        if 'error' in result:
+            return 'failed', result['error'], 1
+        passed = result['exit_code'] == 0
+        output = f"exit_code={result['exit_code']}\nstdout:\n{result['stdout']}\nstderr:\n{result['stderr']}"
+        return ('passed' if passed else 'failed'), output, 1
+
+    qa_agent = next((a for a in roster_agents if any(
+        kw in (a.get('role') or '').lower() for kw in ('qa', 'review', 'test')
+    )), None)
+    if qa_agent:
+        agent_tools_cfg = json.loads(qa_agent.get('tools') or '{}')
+        agent_tools = build_tools(agent_tools_cfg)
+        msgs = [
+            {'role': 'system', 'content': qa_agent.get('system_prompt') or ''},
+            {'role': 'user', 'content': (
+                f'Pipeline goal: {pipeline["goal"]}\n'
+                f'Review the current workspace state against the goal. '
+                f'Respond ONLY with valid JSON: {{"passed": true|false, "notes": "specific findings"}}'
+            )},
+        ]
+        raw, err = run_llm_fn('auto', msgs, agent_tools, turn_index, agent_ctx=qa_agent.get('context_len') or 0)
+        if not raw:
+            return 'failed', f'QA agent unavailable: {err}', 2
+        try:
+            cleaned = raw.strip().lstrip('`').removeprefix('json').strip('`').strip()
+            if not cleaned.startswith('{'):
+                start, end = cleaned.rfind('{'), cleaned.rfind('}')
+                if start != -1 and end > start:
+                    cleaned = cleaned[start:end + 1]
+            result = json.loads(cleaned)
+        except Exception:
+            return 'failed', f'QA agent gave unparseable response: {raw[:200]}', 2
+        return ('passed' if result.get('passed') else 'failed'), result.get('notes', ''), 2
+
+    return ('passed',
+            'No verify_command configured and no QA-role agent in the roster — self-check tier: '
+            'see this turn\'s "reasoning" for why ground-truth verification does not apply here.',
+            3)
+
+def verification_satisfied(turns):
+    """True only if the most recent verify turn passed and no invoke turn has
+    landed changes since it. `turns` must be live (non-superseded), ordered
+    by turn_index — i.e. exactly what get_live_turns() returns."""
+    last_verify_idx = None
+    for t in turns:
+        if t['action'] == 'verify' and t.get('verify_status') == 'passed':
+            last_verify_idx = t['turn_index']
+    if last_verify_idx is None:
+        return False
+    return not any(t['action'] == 'invoke' and t['turn_index'] > last_verify_idx for t in turns)
+
 _HW_NUM_CTX = None
 
 def detect_num_ctx(cfg):
