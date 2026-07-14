@@ -4432,8 +4432,10 @@ let codeModuleInited = false;
 function initCode() {
   switchCodeMode('editor');
   if (codeModuleInited) return;
-  codeModuleInited = true;
-  window.CodeEditorApp?.initCode();
+  if (window.CodeEditorApp) {
+    codeModuleInited = true;
+    window.CodeEditorApp.initCode();
+  }
 }
 
 
