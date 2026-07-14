@@ -32,6 +32,19 @@ def load_config():
     except (json.JSONDecodeError, OSError):
         return dict(DEFAULT_CONFIG)
 
+def _write_config_root_path(root_path):
+    """Rewrite atlantis.config.json's root_path, preserving other keys, and
+    update the in-memory _config so it matches what's now on disk."""
+    try:
+        cfg = json.loads(CONFIG_FILE.read_text()) if CONFIG_FILE.exists() else dict(DEFAULT_CONFIG)
+        if not isinstance(cfg, dict):
+            cfg = dict(DEFAULT_CONFIG)
+    except (json.JSONDecodeError, OSError):
+        cfg = dict(DEFAULT_CONFIG)
+    cfg['root_path'] = root_path
+    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+    _config['root_path'] = root_path
+
 _config = load_config()
 PORT    = _config['port']
 
@@ -2696,6 +2709,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _put_code_session(self, body):
         now = datetime.datetime.now().isoformat()
+        root_path = body.get('rootPath') or str(Path.home())
+        if body.get('rootPath'):
+            try:
+                p = self._fs_safe(body['rootPath'])
+            except Exception as e:
+                return self._json({'error': str(e)}, 400)
+            if not p.is_dir():
+                return self._json({'error': f'Not a directory: {p}'}, 400)
+            root_path = str(p)
+            _write_config_root_path(root_path)
         with get_db() as db:
             db.execute('''
                 INSERT INTO code_sessions (id, root_path, open_files, active_file, updated_at)
@@ -2706,7 +2729,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     active_file=excluded.active_file,
                     updated_at=excluded.updated_at
             ''', (
-                body.get('rootPath') or str(Path.home()),
+                root_path,
                 json.dumps(body.get('openFiles', [])),
                 body.get('activeFile'),
                 now,
