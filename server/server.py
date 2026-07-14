@@ -187,6 +187,19 @@ def init_db():
                 updated_at  TEXT
             );
             INSERT OR IGNORE INTO code_sessions (id) VALUES ('default');
+            CREATE TABLE IF NOT EXISTS code_layouts (
+                name        TEXT PRIMARY KEY,
+                panes_json  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS code_layout_state (
+                id                     TEXT PRIMARY KEY DEFAULT 'default',
+                current_layout_name    TEXT,
+                panes_json             TEXT NOT NULL DEFAULT '[]',
+                preferred_widths_json  TEXT NOT NULL DEFAULT '{}',
+                updated_at             TEXT
+            );
+            INSERT OR IGNORE INTO code_layout_state (id) VALUES ('default');
             CREATE TABLE IF NOT EXISTS jobs (
                 id            TEXT PRIMARY KEY,
                 pipeline_id   TEXT NOT NULL,
