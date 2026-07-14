@@ -261,8 +261,11 @@ def http_request_core(url, method='GET', headers=None, body=None):
     except urllib.error.HTTPError as e:
         return {'status': e.code, 'body': e.read(262144).decode('utf-8', errors='replace')[:50000]}
 
-def run_command_core(command, cwd=None, timeout=60):
-    work = pipe_path_safe(cwd) if cwd else get_fs_root()
+def run_command_core(command, cwd=None, timeout=60, work_root=None):
+    if cwd:
+        work = pipe_path_safe(cwd, work_root)
+    else:
+        work = Path(work_root) if work_root else get_fs_root()
     if not work.is_dir():
         return {'error': f'cwd is not a directory: {work}'}
     try:
@@ -327,22 +330,23 @@ def browser_snapshot():
             'elements': els,
             'hint': 'Use the ref numbers with browser_click / browser_type.'}
 
-def exec_tool(name, args, allowed=None):
+def exec_tool(name, args, allowed=None, work_root=None):
     if allowed is not None and name not in allowed:
         return {'error': f'Tool not permitted for this agent: {name}'}
+    root = Path(work_root) if work_root else get_fs_root()
     try:
         if name == 'read_file':
-            p = pipe_path_safe(args.get('path', ''))
+            p = pipe_path_safe(args.get('path', ''), work_root)
             return {'content': p.read_text()}
         elif name == 'write_file':
-            p = pipe_path_safe(args.get('path', ''))
+            p = pipe_path_safe(args.get('path', ''), work_root)
             if _db_write_guard(p):
                 return {'error': 'Writing to the system database file is not allowed'}
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(args.get('content', ''))
             return {'ok': True, 'path': str(p)}
         elif name == 'edit_file':
-            p = pipe_path_safe(args.get('path', ''))
+            p = pipe_path_safe(args.get('path', ''), work_root)
             if _db_write_guard(p):
                 return {'error': 'Editing the system database file is not allowed'}
             old, new = args.get('old_string', ''), args.get('new_string', '')
@@ -357,12 +361,12 @@ def exec_tool(name, args, allowed=None):
             p.write_text(text.replace(old, new) if args.get('replace_all') else text.replace(old, new, 1))
             return {'ok': True, 'path': str(p), 'replacements': count if args.get('replace_all') else 1}
         elif name == 'list_files':
-            p = pipe_path_safe(args.get('path', str(Path.home())))
+            p = pipe_path_safe(args.get('path', str(root)), work_root)
             entries = [{'name': e.name, 'type': 'dir' if e.is_dir() else 'file'}
                        for e in sorted(p.iterdir())]
             return {'entries': entries}
         elif name == 'search_files':
-            p = pipe_path_safe(args.get('path', str(get_fs_root())))
+            p = pipe_path_safe(args.get('path', str(root)), work_root)
             pattern = args.get('pattern', '')
             if not pattern:
                 return {'error': 'pattern is required'}
@@ -379,7 +383,7 @@ def exec_tool(name, args, allowed=None):
         elif name == 'run_command':
             if not args.get('command'):
                 return {'error': 'command is required'}
-            return run_command_core(args['command'], args.get('cwd'), args.get('timeout'))
+            return run_command_core(args['command'], args.get('cwd'), args.get('timeout'), work_root)
         elif name == 'browser_navigate':
             page = _browser_page()
             page.goto(args.get('url', ''), timeout=20000, wait_until='load')
@@ -405,7 +409,7 @@ def exec_tool(name, args, allowed=None):
             return {'messages': _BROWSER['console'][-30:]}
         elif name == 'browser_screenshot':
             page = _browser_page()
-            p = pipe_path_safe(args.get('path') or str(get_fs_root() / 'screenshot.png'))
+            p = pipe_path_safe(args.get('path') or str(root / 'screenshot.png'), work_root)
             p.parent.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(p), full_page=bool(args.get('full_page')))
             return {'ok': True, 'path': str(p)}
@@ -610,7 +614,7 @@ def flush_chunks(job_id, pending):
         db.execute("UPDATE jobs SET output_log = output_log || ? WHERE id = ?", (lines, job_id))
     pending.clear()
 
-def ollama_agentic(ollama_ep, model, messages, use_tools, step_idx, job_id, num_ctx=0):
+def ollama_agentic(ollama_ep, model, messages, use_tools, step_idx, job_id, num_ctx=0, work_root=None):
     """Agentic loop: call Ollama, execute tool calls, repeat until done.
     `use_tools` is the list of tool defs this agent may use (empty/None = no tools).
     Logs step_chunk, step_thinking and tool_call events. Returns (output_text, error).
@@ -695,7 +699,7 @@ def ollama_agentic(ollama_ep, model, messages, use_tools, step_idx, job_id, num_
             if isinstance(args, str):
                 try: args = json.loads(args)
                 except Exception: args = {}
-            result = exec_tool(name, args, allowed=allowed)
+            result = exec_tool(name, args, allowed=allowed, work_root=work_root)
             log_event(job_id, {'type': 'tool_call', 'stepIndex': step_idx,
                                 'tool': name, 'result': result})
             msgs.append({'role': 'tool', 'content': json.dumps(result)})
@@ -760,7 +764,7 @@ def to_anthropic_tools(tools):
         for t in (tools or [])
     ]
 
-def anthropic_agentic(api_key, model, messages, use_tools, step_idx, job_id):
+def anthropic_agentic(api_key, model, messages, use_tools, step_idx, job_id, work_root=None):
     """Agentic loop using Anthropic /v1/messages streaming. `use_tools` is the
     list of ollama-format tool defs this agent may use. Returns (output, error)."""
     if not api_key:
@@ -858,7 +862,7 @@ def anthropic_agentic(api_key, model, messages, use_tools, step_idx, job_id):
         ant_msgs.append({'role': 'assistant', 'content': ant_content})
         tool_results = []
         for tu in tool_uses:
-            result = exec_tool(tu['name'], tu['input'], allowed=allowed)
+            result = exec_tool(tu['name'], tu['input'], allowed=allowed, work_root=work_root)
             log_event(job_id, {'type': 'tool_call', 'stepIndex': step_idx,
                                 'tool': tu['name'], 'result': result})
             tool_results.append({'type': 'tool_result', 'tool_use_id': tu['id'],
@@ -1054,10 +1058,10 @@ def execute_job(job):
         def run_llm(tier, msgs, use_tools, step_idx, agent_ctx=0):
             provider, model, cred = resolve_llm(tier, msgs, router, cfg, pm_model)
             if provider == 'anthropic':
-                return anthropic_agentic(cred, model, msgs, use_tools, step_idx, job_id)
+                return anthropic_agentic(cred, model, msgs, use_tools, step_idx, job_id, work_root=work_root)
             # Hardware floor, but an agent configured higher gets what it asked for
             return ollama_agentic(cred, model, msgs, use_tools, step_idx, job_id,
-                                  num_ctx=max(base_ctx, agent_ctx or 0))
+                                  num_ctx=max(base_ctx, agent_ctx or 0), work_root=work_root)
 
         def run_pm(msgs):
             provider, model, cred = resolve_llm(pm_tier, msgs, router, cfg, pm_model)
@@ -1123,7 +1127,7 @@ def execute_job(job):
                 log_event(job_id, {'type': 'feedback_triage',
                                    'targets': sorted(fb_targets), 'reused': sorted(fb_skip)})
 
-        work_root  = str(get_fs_root())
+        work_root  = str(pipeline.get('work_dir') or get_fs_root())
 
         def step_uses_fs(s):
             a = next((x for x in all_agents if x['id'] == s.get('agentId')), None)
