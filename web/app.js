@@ -69,7 +69,7 @@ let models   = [];
 let agents   = [];
 let tasks    = [];
 const CODE_SERVER_DEFAULT = `${location.protocol}//${location.hostname}:5001`; // code-server always runs on the same host as this app
-let settings = { endpoint: OLLAMA, showTokenStats: true, showThinking: true, timeoutHours: 5, pipelineManagerModel: '', pipelineMaxRetries: 3, brainPrePrompt: '', agentPrePrompt: '', chatPrePrompt: '', codeServerUrl: CODE_SERVER_DEFAULT, defaultAgentId: '', defaultAgentIdFallback: '', userName: '' };
+let settings = { endpoint: OLLAMA, showTokenStats: true, showThinking: true, timeoutHours: 5, pipelineManagerModel: '', pipelineMaxRetries: 3, brainPrePrompt: '', agentPrePrompt: '', chatPrePrompt: '', codeServerUrl: CODE_SERVER_DEFAULT, defaultAgentId: '', defaultAgentIdFallback: '', userName: '', codeGhostTextTier: 'local' };
 
 let abortController = null;
 let isGenerating    = false;
@@ -207,6 +207,13 @@ function initSettingsForm() {
       agents.map(a => `<option value="${a.id}">${escHtml(a.name)}</option>`).join('');
     defAgentFallbackSel.value = settings.defaultAgentIdFallback || '';
   }
+
+  const ghostTierSel = document.getElementById('setting-code-ghost-tier');
+  if (ghostTierSel) {
+    ghostTierSel.innerHTML = TIER_OPTIONS.map(t =>
+      `<option value="${t}"${(settings.codeGhostTextTier || 'local') === t ? ' selected' : ''}>${TIER_LABELS[t]}</option>`
+    ).join('');
+  }
 }
 
 document.getElementById('save-settings-btn').addEventListener('click', () => {
@@ -224,6 +231,7 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
   settings.codeServerUrl         = document.getElementById('setting-code-server-url')?.value.trim() || CODE_SERVER_DEFAULT;
   settings.defaultAgentId        = document.getElementById('setting-default-agent')?.value || '';
   settings.defaultAgentIdFallback = document.getElementById('setting-default-agent-fallback')?.value || '';
+  settings.codeGhostTextTier    = document.getElementById('setting-code-ghost-tier')?.value || 'local';
   const btn = document.getElementById('save-settings-btn');
   btn.disabled = true;
   saveSettings()
@@ -810,7 +818,7 @@ async function runTask(id) {
       if (turnToolCalls.length > 0) {
         msgs.push({ role: 'assistant', content: '', tool_calls: turnToolCalls });
         for (const tc of turnToolCalls) {
-          const result = await executeTool(tc.function.name, tc.function.arguments ?? {});
+          const result = await executeTool(tc.function.name, tc.function.arguments ?? {}, null);
           msgs.push({ role: 'tool', content: String(result) });
         }
         run.output = '';
@@ -1259,6 +1267,7 @@ const TOOL_DEFS = {
   browser_type:      { type:'function', function:{ name:'browser_type',      description:'Type into an input by ref number; submit=true presses Enter', parameters:{ type:'object', properties:{ ref:{ type:'integer' }, text:{ type:'string' }, submit:{ type:'boolean' }}, required:['ref','text'] }}},
   browser_console:   { type:'function', function:{ name:'browser_console',   description:'Recent browser console messages and page errors', parameters:{ type:'object', properties:{}, required:[] }}},
   browser_screenshot:{ type:'function', function:{ name:'browser_screenshot',description:'Save a PNG screenshot of the current page', parameters:{ type:'object', properties:{ path:{ type:'string' }, full_page:{ type:'boolean' }}, required:[] }}},
+  ask_user: { type:'function', function:{ name:'ask_user', description:'Ask the user a clarifying question with clickable options and/or free text. Blocks until they answer.', parameters:{ type:'object', properties:{ question:{ type:'string' }, options:{ type:'array', items:{ type:'string' } }, allow_multiple:{ type:'boolean' }, allow_free_text:{ type:'boolean' } }, required:['question'] }}},
 };
 
 // Tools executed server-side via /api/tools/exec (shared with the pipeline worker)
@@ -1267,7 +1276,7 @@ const SERVER_TOOLS = new Set(['edit_file','search_files','http_request','run_com
 
 function buildTools(toolPerms) {
   if (!toolPerms) return [];
-  const out = [];
+  const out = [TOOL_DEFS.ask_user];
   if (toolPerms.files) out.push(TOOL_DEFS.read_file, TOOL_DEFS.write_file, TOOL_DEFS.edit_file, TOOL_DEFS.list_dir, TOOL_DEFS.search_files);
   if (toolPerms.web)   out.push(TOOL_DEFS.web_search, TOOL_DEFS.web_fetch, TOOL_DEFS.http_request);
   if (toolPerms.shell) out.push(TOOL_DEFS.run_command);
@@ -1283,6 +1292,7 @@ function buildToolManifest(toolPerms) {
     'If you need to call a tool, use an action block:',
     '```action', '{"tool":"TOOL_NAME","params":{...}}', '```',
   ];
+  lines.push('- **ask_user** `{"question":"<text>","options":["A","B"],"allow_multiple":false,"allow_free_text":true}` — ask the user a clarifying question; blocks until answered');
   if (toolPerms.files) {
     lines.push('- **read_file** `{"path":"<rel-path>"}` — read a file');
     lines.push('- **write_file** `{"path":"<rel-path>","content":"<text>"}` — write a file');
@@ -1306,7 +1316,7 @@ function buildToolManifest(toolPerms) {
   return lines.join('\n');
 }
 
-async function executeTool(name, params) {
+async function executeTool(name, params, targetWindow) {
   try {
     switch (name) {
       case 'read_file': {
@@ -1331,6 +1341,14 @@ async function executeTool(name, params) {
       case 'web_fetch': {
         const r = await api('GET', `/api/web/fetch?url=${encodeURIComponent(params.url || '')}`);
         return typeof r === 'string' ? r : JSON.stringify(r, null, 2);
+      }
+      case 'ask_user': {
+        if (!targetWindow) {
+          return 'No interactive surface available to ask the user in this context; proceed using your best judgement.';
+        }
+        return await new Promise(resolve => {
+          renderAskUserCard(targetWindow, params, answer => resolve(answer));
+        });
       }
       default: {
         if (SERVER_TOOLS.has(name)) {
@@ -1386,6 +1404,52 @@ function renderToolCallBubble(chatWin, toolCalls) {
 
 function renderToolResultBubble(toolWrap, index, result) {
   finishToolBlock(toolWrap?._blocks?.[index], result);
+}
+
+function renderAskUserCard(chatWin, params, onAnswer) {
+  const { question, options = [], allow_multiple: multi = false, allow_free_text: freeText = true } = params || {};
+  const wrap = document.createElement('div');
+  wrap.className = 'message ask-user-card';
+  const optsHtml = options.map((o, i) => `
+    <button class="ask-user-opt" data-idx="${i}" type="button">${escHtml(o)}</button>`).join('');
+  wrap.innerHTML = `
+    <p class="ask-user-question">${escHtml(question || '')}</p>
+    <div class="ask-user-opts">${optsHtml}</div>
+    ${freeText ? `
+    <div class="ask-user-free">
+      <input type="text" class="ask-user-input" placeholder="Or type your own answer…">
+      <button class="ask-user-submit" type="button">Send</button>
+    </div>` : ''}`;
+  chatWin.appendChild(wrap);
+  chatWin.scrollTop = chatWin.scrollHeight;
+
+  const selected = new Set();
+  function finish(answer) {
+    wrap.querySelectorAll('button, input').forEach(el => el.disabled = true);
+    wrap.classList.add('answered');
+    onAnswer(answer);
+  }
+  wrap.querySelectorAll('.ask-user-opt').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!multi) return finish(options[Number(btn.dataset.idx)]);
+      btn.classList.toggle('selected');
+      const idx = Number(btn.dataset.idx);
+      selected.has(idx) ? selected.delete(idx) : selected.add(idx);
+    });
+  });
+  if (multi && options.length) {
+    const doneBtn = document.createElement('button');
+    doneBtn.className = 'ask-user-submit';
+    doneBtn.textContent = 'Confirm selection';
+    doneBtn.addEventListener('click', () => finish([...selected].sort().map(i => options[i]).join(', ')));
+    wrap.querySelector('.ask-user-opts').insertAdjacentElement('afterend', doneBtn);
+  }
+  const input = wrap.querySelector('.ask-user-input');
+  const submit = wrap.querySelector('.ask-user-free .ask-user-submit');
+  if (input && submit) {
+    submit.addEventListener('click', () => { if (input.value.trim()) finish(input.value.trim()); });
+    input.addEventListener('keydown', e => { if (e.key === 'Enter' && input.value.trim()) finish(input.value.trim()); });
+  }
 }
 
 // ── Chat — send / stream ──────────────────────────────────────────────────────
@@ -1531,7 +1595,7 @@ async function send() {
         apiMessages.push({ role: 'assistant', content: '', tool_calls: turnToolCalls });
         for (let i = 0; i < turnToolCalls.length; i++) {
           const tc = turnToolCalls[i];
-          const result = await executeTool(tc.function.name, tc.function.arguments ?? {});
+          const result = await executeTool(tc.function.name, tc.function.arguments ?? {}, chatWindow);
           renderToolResultBubble(toolWrap, i, result);
           apiMessages.push({ role: 'tool', content: String(result) });
         }
@@ -4304,7 +4368,7 @@ async function sendHomeBrainMessage(text) {
         apiMessages.push({ role: 'assistant', content: '', tool_calls: turnToolCalls });
         for (let i = 0; i < turnToolCalls.length; i++) {
           const tc = turnToolCalls[i];
-          const result = await executeTool(tc.function.name, tc.function.arguments ?? {});
+          const result = await executeTool(tc.function.name, tc.function.arguments ?? {}, win);
           renderToolResultBubble(toolWrap, i, result);
           apiMessages.push({ role: 'tool', content: String(result) });
         }

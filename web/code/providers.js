@@ -88,3 +88,79 @@ export class MockAIProvider {
     }
   }
 }
+
+export class RealFileProvider {
+  async list(path) {
+    const r = await api('GET', `/api/fs?path=${encodeURIComponent(path || '')}`);
+    if (r.error) throw new Error(r.error);
+    return (r.entries || []).map(e => ({
+      name: e.name,
+      type: e.type,
+      path: path ? `${path.replace(/\/$/, '')}/${e.name}` : e.name,
+    }));
+  }
+
+  async read(path) {
+    const r = await api('GET', `/api/fs/read?path=${encodeURIComponent(path)}`);
+    if (r.error) throw new Error(r.error);
+    return r.content ?? '';
+  }
+
+  async write(path, content) {
+    const r = await api('POST', '/api/fs/write', { path, content });
+    if (r.error) throw new Error(r.error);
+    return { created: true };
+  }
+
+  async mkdir(path) {
+    const r = await api('POST', '/api/fs/mkdir', { path });
+    if (r.error) throw new Error(r.error);
+    return { created: true };
+  }
+}
+
+export class RealAIProvider {
+  async listModels() {
+    try {
+      const res = await fetch(`${await resolveOllama()}/api/tags`);
+      const data = await res.json();
+      return (data.models || []).map(m => m.name);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  async listSkills() {
+    return new MockAIProvider().listSkills();
+  }
+
+  async *chat({ messages, model, tools }) {
+    const body = { model, messages, stream: true };
+    if (tools?.length) body.tools = tools;
+    const res = await fetch(`${await resolveOllama()}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let toolCalls = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let chunk;
+        try { chunk = JSON.parse(line); } catch (_) { continue; }
+        if (chunk.message?.tool_calls?.length) toolCalls.push(...chunk.message.tool_calls);
+        if (chunk.message?.content) yield chunk.message.content;
+      }
+    }
+    if (toolCalls.length) yield { toolCalls };
+  }
+}

@@ -3063,6 +3063,17 @@ button { font-family: inherit; }
   overflow-x: auto;
 }
 
+/* ── ask_user tool card ─────────────────────────────────────────────────────── */
+.ask-user-card { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; }
+.ask-user-question { margin: 0; font-weight: 600; }
+.ask-user-opts { display: flex; flex-wrap: wrap; gap: 8px; }
+.ask-user-opt { padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg3); color: var(--text); cursor: pointer; }
+.ask-user-opt.selected { background: var(--accent); color: var(--bg); }
+.ask-user-card.answered .ask-user-opt:not(.selected) { opacity: 0.5; }
+.ask-user-free { display: flex; gap: 8px; }
+.ask-user-input { flex: 1; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg3); color: var(--text); }
+.ask-user-submit { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--accent); color: var(--bg); cursor: pointer; }
+
 /* ── Agent editor: tool toggles ─────────────────────────────────────────────── */
 .toggle-row {
   display: flex;
