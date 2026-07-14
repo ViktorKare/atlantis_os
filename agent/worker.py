@@ -556,6 +556,92 @@ def get_live_turns(run_id):
         ).fetchall())
     return rows
 
+def build_orchestrator_prompt(pipeline, roster_agents, turns, workspace_diff):
+    roster_lines = [
+        f'- id={a["id"]} name="{a["name"]}" role="{a.get("role") or "(none)"}" '
+        f'goal="{a.get("agent_goal") or "(none)"}" '
+        f'expected_output="{a.get("expected_output") or "(none)"}"'
+        for a in roster_agents
+    ]
+    roster_text = '\n'.join(roster_lines) or '(roster is empty)'
+
+    history_lines = []
+    for t in turns:
+        line = f'Turn {t["turn_index"]}: action={t["action"]} agent={t.get("agent_name","")}\n'
+        if t.get('instructions'):    line += f'  instructions: {t["instructions"]}\n'
+        if t.get('reasoning'):       line += f'  reasoning: {t["reasoning"]}\n'
+        if t.get('output'):          line += f'  output: {t["output"][:2000]}\n'
+        if t.get('workspace_diff'):  line += f'  workspace diff:\n{t["workspace_diff"]}\n'
+        if t.get('verify_status'):   line += f'  verify_status: {t["verify_status"]}\n'
+        history_lines.append(line)
+    history_text = '\n'.join(history_lines) or '(no turns yet — this is the first decision)'
+
+    return [{'role': 'user', 'content': (
+        f'You are the orchestrator for a dynamic pipeline.\n'
+        f'Goal: {pipeline["goal"]}\n\n'
+        f'Agent roster (the ONLY agents you may invoke):\n{roster_text}\n\n'
+        f'Turn history so far:\n{history_text}\n\n'
+        f'Current workspace state (uncommitted changes since the last turn):\n'
+        f'{workspace_diff or "(no changes)"}\n\n'
+        f'Decide what happens next. Respond ONLY with valid JSON (no markdown fences, no extra text):\n'
+        '{"action":"invoke","agentId":"<id from roster>","instructions":"<specific task for that agent>",'
+        '"reasoning":"<why this agent, why now>","rootCauseTurn":null}\n'
+        'or {"action":"verify","reasoning":"<why verification is needed now>"}\n'
+        'or {"action":"done","reasoning":"<why the goal is fully satisfied>"}\n'
+        'or {"action":"fail","reasoning":"<why this cannot be completed>"}\n\n'
+        'Set "rootCauseTurn" to the turn_index of an earlier turn ONLY when you have identified that turn '
+        'as the actual source of a problem (not the turn that merely surfaced it) — the corrective invoke '
+        'you specify will invalidate every turn after it. Otherwise leave it null or omit it.\n'
+        'Be strict: keep each agent scoped to its stated role/goal/expected_output — reject scope creep '
+        '(e.g. a planner writing implementation code, or a developer redesigning the plan) by routing '
+        'to the right agent instead of letting one agent do everyone\'s job.'
+    )}]
+
+def parse_orchestrator_decision(raw, roster_ids):
+    try:
+        cleaned = raw.strip().lstrip('`').removeprefix('json').strip('`').strip()
+        if not cleaned.startswith('{'):
+            start, end = cleaned.rfind('{'), cleaned.rfind('}')
+            if start != -1 and end > start:
+                cleaned = cleaned[start:end + 1]
+        decision = json.loads(cleaned)
+    except Exception:
+        return None, f'unparseable orchestrator response: {raw[:200]}'
+    action = decision.get('action')
+    if action not in ('invoke', 'verify', 'done', 'fail'):
+        return None, f'invalid action {action!r} — must be invoke, verify, done, or fail'
+    if action == 'invoke':
+        agent_id = decision.get('agentId')
+        if agent_id not in roster_ids:
+            return None, f'agentId {agent_id!r} is not in the roster; valid ids are: {sorted(roster_ids)}'
+        if not decision.get('instructions'):
+            return None, 'invoke decisions require non-empty "instructions"'
+    decision.setdefault('rootCauseTurn', None)
+    decision.setdefault('reasoning', '')
+    return decision, None
+
+def ask_orchestrator(pipeline, roster_agents, turns, workspace_diff, router, cfg, base_ctx, pm_model, pm_tier):
+    roster_ids = {a['id'] for a in roster_agents}
+    msgs = build_orchestrator_prompt(pipeline, roster_agents, turns, workspace_diff)
+    for _ in range(3):
+        provider, model, cred = resolve_llm(pm_tier, msgs, router, cfg, pm_model)
+        if provider == 'anthropic':
+            raw, err = anthropic_once(cred, model, msgs)
+        else:
+            raw, err = ollama_once(cred, model, msgs, num_ctx=base_ctx)
+        if not raw:
+            msgs = msgs + [{'role': 'user', 'content':
+                            f'Your previous response failed: {err or "empty response"}. '
+                            f'Try again — respond ONLY with the JSON decision.'}]
+            continue
+        decision, val_err = parse_orchestrator_decision(raw, roster_ids)
+        if decision is not None:
+            return decision, None
+        msgs = msgs + [{'role': 'user', 'content':
+                        f'Your previous response was invalid: {val_err}. '
+                        f'Try again — respond ONLY with the JSON decision.'}]
+    return None, 'orchestrator failed to produce a valid decision after 3 attempts'
+
 _HW_NUM_CTX = None
 
 def detect_num_ctx(cfg):
