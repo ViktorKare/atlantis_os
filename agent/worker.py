@@ -616,7 +616,8 @@ def parse_orchestrator_decision(raw, roster_ids):
             return None, f'agentId {agent_id!r} is not in the roster; valid ids are: {sorted(roster_ids)}'
         if not decision.get('instructions'):
             return None, 'invoke decisions require non-empty "instructions"'
-    decision.setdefault('rootCauseTurn', None)
+    rc = decision.get('rootCauseTurn')
+    decision['rootCauseTurn'] = rc if isinstance(rc, int) and not isinstance(rc, bool) and rc >= 0 else None
     decision.setdefault('reasoning', '')
     return decision, None
 
