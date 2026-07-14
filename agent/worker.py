@@ -544,8 +544,8 @@ def supersede_turns_after(run_id, root_cause_index, new_turn_index):
     with db_session() as db:
         db.execute(
             'UPDATE pipeline_turns SET superseded_by=? '
-            'WHERE run_id=? AND turn_index>? AND superseded_by IS NULL',
-            (new_turn_index, run_id, root_cause_index)
+            'WHERE run_id=? AND turn_index>? AND turn_index<? AND superseded_by IS NULL',
+            (new_turn_index, run_id, root_cause_index, new_turn_index)
         )
 
 def get_live_turns(run_id):
