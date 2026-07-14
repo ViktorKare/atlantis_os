@@ -1775,155 +1775,164 @@ def execute_dynamic_job(job, pipeline, all_agents, cfg, router, base_ctx, pm_mod
         finish_job(job_id, 'failed', 'Empty roster')
         return
 
-    work_root = pipeline.get('work_dir') or str(get_fs_root())
-    Path(work_root).mkdir(parents=True, exist_ok=True)
-    git_ok = git_workspace_ready(work_root)
+    try:
+        work_root = pipeline.get('work_dir') or str(get_fs_root())
+        Path(work_root).mkdir(parents=True, exist_ok=True)
+        git_ok = git_workspace_ready(work_root)
 
-    run_id = str(time.time_ns())
-    with db_session() as db:
-        db.execute(
-            'INSERT INTO pipeline_runs (id,pipeline_id,status,started_at) VALUES (?,?,?,?)',
-            (run_id, pid, 'running', datetime.datetime.now().isoformat())
-        )
-    log_event(job_id, {'type': 'run_start', 'runId': run_id, 'mode': 'dynamic'})
-
-    def run_llm(tier, msgs, use_tools, turn_idx, agent_ctx=0):
-        provider, model, cred = resolve_llm(tier, msgs, router, cfg, pm_model)
-        if provider == 'anthropic':
-            return anthropic_agentic(cred, model, msgs, use_tools, turn_idx, job_id, work_root=work_root)
-        return ollama_agentic(cred, model, msgs, use_tools, turn_idx, job_id,
-                              num_ctx=max(base_ctx, agent_ctx or 0), work_root=work_root)
-
-    def set_run_status(status, error=None):
+        run_id = str(time.time_ns())
         with db_session() as db:
-            db.execute('UPDATE pipeline_runs SET status=?,finished_at=?,error=? WHERE id=?',
-                       (status, datetime.datetime.now().isoformat(), error, run_id))
-
-    max_turns = pipeline.get('max_turns') or 20
-    last_invoke_hash, last_invoke_agent = None, None
-    turn_index = 0
-
-    while turn_index < max_turns:
-        if job_cancel_requested(job_id):
-            set_run_status('cancelled')
-            log_event(job_id, {'type': 'run_cancelled', 'reason': 'Cancelled by user'})
-            finish_job(job_id, 'cancelled')
-            return
-
-        workspace_diff = git_churn_stat(work_root) if git_ok else ''
-        live_turns = get_live_turns(run_id)
-        decision, err = ask_orchestrator(pipeline, roster_agents, live_turns, workspace_diff,
-                                         router, cfg, base_ctx, pm_model, pm_tier)
-        if err:
-            set_run_status('failed', error=err)
-            log_event(job_id, {'type': 'run_failed', 'reason': err})
-            finish_job(job_id, 'failed', err)
-            return
-
-        if decision.get('rootCauseTurn') is not None:
-            root_idx = decision['rootCauseTurn']
-            supersede_turns_after(run_id, root_idx, turn_index)
-            log_event(job_id, {'type': 'turn_superseded', 'rootCauseTurn': root_idx, 'byTurn': turn_index})
-            live_turns = get_live_turns(run_id)
-
-        action = decision['action']
-
-        if action == 'done':
-            if verification_satisfied(live_turns):
-                set_run_status('done')
-                log_event(job_id, {'type': 'run_done', 'runId': run_id})
-                finish_job(job_id, 'done')
-                return
-            decision = {'action': 'verify', 'reasoning':
-                       'Forced: cannot finish without a passing verification since the last change.',
-                       'rootCauseTurn': None}
-            action = 'verify'
-            log_event(job_id, {'type': 'verification_override', 'turnIndex': turn_index})
-
-        agent = None
-        if action == 'invoke':
-            agent = next((a for a in roster_agents if a['id'] == decision.get('agentId')), None)
-
-        insert_turn(run_id, turn_index, agent['id'] if agent else None,
-                   agent['name'] if agent else '', action,
-                   decision.get('instructions', ''), decision.get('reasoning', ''))
-        log_event(job_id, {'type': 'turn_start', 'turnIndex': turn_index, 'action': action,
-                           'agentName': agent['name'] if agent else '',
-                           'reasoning': decision.get('reasoning', '')})
-
-        if action == 'fail':
-            update_turn(run_id, turn_index, status='done', finished_at=datetime.datetime.now().isoformat())
-            reason = decision.get('reasoning', 'Orchestrator gave up')
-            set_run_status('failed', error=reason)
-            log_event(job_id, {'type': 'run_failed', 'reason': reason})
-            finish_job(job_id, 'failed', reason)
-            return
-
-        elif action == 'invoke':
-            sys_parts = []
-            if agent.get('system_prompt'):
-                sys_parts.append(agent['system_prompt'])
-            sys_parts.append(
-                f'Your role: {agent.get("role") or "(unspecified)"}\n'
-                f'Your goal: {agent.get("agent_goal") or "(unspecified)"}\n'
-                f'Expected output shape: {agent.get("expected_output") or "(unspecified)"}\n'
-                f"Stay inside this role — do not do another agent's job."
+            db.execute(
+                'INSERT INTO pipeline_runs (id,pipeline_id,status,started_at) VALUES (?,?,?,?)',
+                (run_id, pid, 'running', datetime.datetime.now().isoformat())
             )
-            sys_parts.append(f'Pipeline goal: {pipeline["goal"]}')
-            agent_tools_cfg = json.loads(agent.get('tools') or '{}')
-            agent_tools = build_tools(agent_tools_cfg)
-            if agent_tools and (agent_tools_cfg.get('files') or agent_tools_cfg.get('shell')):
-                sys_parts.append(f'WORKSPACE ROOT: {work_root} — every file path MUST start with this prefix.')
+        log_event(job_id, {'type': 'run_start', 'runId': run_id, 'mode': 'dynamic'})
 
-            user_parts = [f'Your task this turn: {decision.get("instructions", "")}']
-            if workspace_diff:
-                user_parts.append(f'\nCurrent workspace changes (uncommitted, real state — not a summary):\n{workspace_diff}')
+        def run_llm(tier, msgs, use_tools, turn_idx, agent_ctx=0):
+            provider, model, cred = resolve_llm(tier, msgs, router, cfg, pm_model)
+            if provider == 'anthropic':
+                return anthropic_agentic(cred, model, msgs, use_tools, turn_idx, job_id, work_root=work_root)
+            return ollama_agentic(cred, model, msgs, use_tools, turn_idx, job_id,
+                                  num_ctx=max(base_ctx, agent_ctx or 0), work_root=work_root)
 
-            messages = [{'role': 'system', 'content': '\n\n'.join(sys_parts)},
-                       {'role': 'user', 'content': '\n'.join(user_parts)}]
+        def set_run_status(status, error=None):
+            with db_session() as db:
+                db.execute('UPDATE pipeline_runs SET status=?,finished_at=?,error=? WHERE id=?',
+                           (status, datetime.datetime.now().isoformat(), error, run_id))
 
-            if git_ok:
-                git_snapshot(work_root, f'pre-turn {turn_index}')
-            output, agent_err = run_llm('auto', messages, agent_tools, turn_index,
-                                        agent_ctx=agent.get('context_len') or 0)
+        max_turns = pipeline.get('max_turns') or 20
+        last_invoke_hash, last_invoke_agent = None, None
+        turn_index = 0
 
-            if agent_err == 'cancelled' or (agent_err and job_cancel_requested(job_id)):
+        while turn_index < max_turns:
+            if job_cancel_requested(job_id):
                 set_run_status('cancelled')
                 log_event(job_id, {'type': 'run_cancelled', 'reason': 'Cancelled by user'})
                 finish_job(job_id, 'cancelled')
                 return
 
-            diff_after = git_churn_stat(work_root) if git_ok else ''
-            if agent_err:
-                update_turn(run_id, turn_index, status='failed', output=agent_err,
-                           workspace_diff=diff_after, finished_at=datetime.datetime.now().isoformat())
-                log_event(job_id, {'type': 'turn_done', 'turnIndex': turn_index,
-                                   'status': 'failed', 'error': agent_err})
-            else:
-                update_turn(run_id, turn_index, status='done', output=output,
-                           workspace_diff=diff_after, finished_at=datetime.datetime.now().isoformat())
-                log_event(job_id, {'type': 'turn_done', 'turnIndex': turn_index, 'status': 'done'})
+            workspace_diff = git_churn_stat(work_root) if git_ok else ''
+            live_turns = get_live_turns(run_id)
+            decision, err = ask_orchestrator(pipeline, roster_agents, live_turns, workspace_diff,
+                                             router, cfg, base_ctx, pm_model, pm_tier)
+            if err:
+                set_run_status('failed', error=err)
+                log_event(job_id, {'type': 'run_failed', 'reason': err})
+                finish_job(job_id, 'failed', err)
+                return
 
-                stall_hash = hashlib.sha256(f'{agent["id"]}:{output}'.encode()).hexdigest()
-                if last_invoke_agent == agent['id'] and last_invoke_hash == stall_hash:
-                    set_run_status('failed', error='stalled')
-                    log_event(job_id, {'type': 'run_failed', 'reason': 'stalled'})
-                    finish_job(job_id, 'failed', 'stalled')
+            if decision.get('rootCauseTurn') is not None:
+                root_idx = decision['rootCauseTurn']
+                supersede_turns_after(run_id, root_idx, turn_index)
+                log_event(job_id, {'type': 'turn_superseded', 'rootCauseTurn': root_idx, 'byTurn': turn_index})
+                live_turns = get_live_turns(run_id)
+
+            action = decision['action']
+
+            if action == 'done':
+                if verification_satisfied(live_turns):
+                    set_run_status('done')
+                    log_event(job_id, {'type': 'run_done', 'runId': run_id})
+                    finish_job(job_id, 'done')
                     return
-                last_invoke_hash, last_invoke_agent = stall_hash, agent['id']
+                decision = {'action': 'verify', 'reasoning':
+                           'Forced: cannot finish without a passing verification since the last change.',
+                           'rootCauseTurn': None}
+                action = 'verify'
+                log_event(job_id, {'type': 'verification_override', 'turnIndex': turn_index})
 
-        elif action == 'verify':
-            status, output, tier = run_verification(pipeline, roster_agents, work_root, run_llm, turn_index)
-            update_turn(run_id, turn_index, status='done', output=output, verify_status=status,
-                       finished_at=datetime.datetime.now().isoformat())
-            log_event(job_id, {'type': 'verification_result', 'turnIndex': turn_index,
-                               'status': status, 'tier': tier})
+            agent = None
+            if action == 'invoke':
+                agent = next((a for a in roster_agents if a['id'] == decision.get('agentId')), None)
 
-        turn_index += 1
+            insert_turn(run_id, turn_index, agent['id'] if agent else None,
+                       agent['name'] if agent else '', action,
+                       decision.get('instructions', ''), decision.get('reasoning', ''))
+            log_event(job_id, {'type': 'turn_start', 'turnIndex': turn_index, 'action': action,
+                               'agentName': agent['name'] if agent else '',
+                               'reasoning': decision.get('reasoning', '')})
 
-    set_run_status('failed', error='max_turns')
-    log_event(job_id, {'type': 'run_failed', 'reason': 'max_turns'})
-    finish_job(job_id, 'failed', 'max_turns exceeded')
+            if action == 'fail':
+                update_turn(run_id, turn_index, status='done', finished_at=datetime.datetime.now().isoformat())
+                reason = decision.get('reasoning', 'Orchestrator gave up')
+                set_run_status('failed', error=reason)
+                log_event(job_id, {'type': 'run_failed', 'reason': reason})
+                finish_job(job_id, 'failed', reason)
+                return
+
+            elif action == 'invoke':
+                sys_parts = []
+                if agent.get('system_prompt'):
+                    sys_parts.append(agent['system_prompt'])
+                sys_parts.append(
+                    f'Your role: {agent.get("role") or "(unspecified)"}\n'
+                    f'Your goal: {agent.get("agent_goal") or "(unspecified)"}\n'
+                    f'Expected output shape: {agent.get("expected_output") or "(unspecified)"}\n'
+                    f"Stay inside this role — do not do another agent's job."
+                )
+                sys_parts.append(f'Pipeline goal: {pipeline["goal"]}')
+                agent_tools_cfg = json.loads(agent.get('tools') or '{}')
+                agent_tools = build_tools(agent_tools_cfg)
+                if agent_tools and (agent_tools_cfg.get('files') or agent_tools_cfg.get('shell')):
+                    sys_parts.append(f'WORKSPACE ROOT: {work_root} — every file path MUST start with this prefix.')
+
+                user_parts = [f'Your task this turn: {decision.get("instructions", "")}']
+                if workspace_diff:
+                    user_parts.append(f'\nCurrent workspace changes (uncommitted, real state — not a summary):\n{workspace_diff}')
+
+                messages = [{'role': 'system', 'content': '\n\n'.join(sys_parts)},
+                           {'role': 'user', 'content': '\n'.join(user_parts)}]
+
+                if git_ok:
+                    git_snapshot(work_root, f'pre-turn {turn_index}')
+                output, agent_err = run_llm('auto', messages, agent_tools, turn_index,
+                                            agent_ctx=agent.get('context_len') or 0)
+
+                if agent_err == 'cancelled' or (agent_err and job_cancel_requested(job_id)):
+                    set_run_status('cancelled')
+                    log_event(job_id, {'type': 'run_cancelled', 'reason': 'Cancelled by user'})
+                    finish_job(job_id, 'cancelled')
+                    return
+
+                diff_after = git_churn_stat(work_root) if git_ok else ''
+                if agent_err:
+                    update_turn(run_id, turn_index, status='failed', output=agent_err,
+                               workspace_diff=diff_after, finished_at=datetime.datetime.now().isoformat())
+                    log_event(job_id, {'type': 'turn_done', 'turnIndex': turn_index,
+                                       'status': 'failed', 'error': agent_err})
+                else:
+                    update_turn(run_id, turn_index, status='done', output=output,
+                               workspace_diff=diff_after, finished_at=datetime.datetime.now().isoformat())
+                    log_event(job_id, {'type': 'turn_done', 'turnIndex': turn_index, 'status': 'done'})
+
+                    stall_hash = hashlib.sha256(f'{agent["id"]}:{output}'.encode()).hexdigest()
+                    if last_invoke_agent == agent['id'] and last_invoke_hash == stall_hash:
+                        set_run_status('failed', error='stalled')
+                        log_event(job_id, {'type': 'run_failed', 'reason': 'stalled'})
+                        finish_job(job_id, 'failed', 'stalled')
+                        return
+                    last_invoke_hash, last_invoke_agent = stall_hash, agent['id']
+
+            elif action == 'verify':
+                status, output, tier = run_verification(pipeline, roster_agents, work_root, run_llm, turn_index)
+                update_turn(run_id, turn_index, status='done', output=output, verify_status=status,
+                           finished_at=datetime.datetime.now().isoformat())
+                log_event(job_id, {'type': 'verification_result', 'turnIndex': turn_index,
+                                   'status': status, 'tier': tier})
+
+            turn_index += 1
+
+        set_run_status('failed', error='max_turns')
+        log_event(job_id, {'type': 'run_failed', 'reason': 'max_turns'})
+        finish_job(job_id, 'failed', 'max_turns exceeded')
+
+    except Exception as e:
+        try: log_event(job_id, {'type': 'error', 'message': str(e)})
+        except Exception: pass
+        try: finish_job(job_id, 'failed', str(e))
+        except Exception: pass
+        try: set_run_status('failed', error=str(e))
+        except Exception: pass
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
