@@ -293,6 +293,21 @@ POST /api/system/stop       no body → {ok: true}
     `settings.brainPrePrompt`, the same value Home's Brain mode sends)
   - Saved agents appear in Chat toolbar "Agent" dropdown (Brain is excluded —
     it's only usable via Home's Brain mode)
+  - `ask_user` — a general-purpose clarifying-question tool (question +
+    optional clickable options / multi-select / free text; blocks the tool
+    loop until answered) — is unconditionally included in every agentic
+    tool loop's tool list (`buildTools()` in `web/app.js`, `buildCodeTools()`
+    in `web/code/ai-panel.js`), independent of the file/web/shell/browser
+    toggles above; used by Chat, Agents, Home's Brain mode, and Code chat.
+    `renderAskUserCard()` scopes its DOM insertion to the surface the tool
+    call originated from (an explicit `targetWindow` param in `web/app.js`;
+    a closure over that pane's own `chatWindow` element in `ai-panel.js`,
+    since each Code chat pane gets its own tool-loop instance) so a question
+    asked from one chat surface doesn't render into another; a Task "Run
+    now" (`runTask()`) calls `executeTool()` with `targetWindow: null` since
+    it has no interactive surface, so `ask_user` there returns a fixed "no
+    interactive surface available, proceed using your best judgement"
+    string instead of hanging the run
 
   **Tasks**
   - CRUD editor: name, agent (optional), model, prompt template
@@ -344,9 +359,11 @@ POST /api/system/stop       no body → {ok: true}
     `+` menu, rendered as floating glass cards over an ambient backdrop
     (reusing Home/Pipelines' horizon-glow + dot-grid effect)
   - Layouts: three built-in presets (Focus/Classic/Compare) plus
-    user-saved named layouts; current arrangement + custom layouts persist
-    via `localStorage` (`codeCurrentLayout`/`codeCustomLayouts`/
-    `codePreferredWidths`) — **not** DB-backed yet
+    user-saved named layouts; current arrangement persists via
+    `GET`/`PUT /api/code-layout-state`, named layouts via `GET`/`POST`/
+    `DELETE /api/code-layouts[/:name]` (DB-backed — the `codeCurrentLayout`/
+    `codeCustomLayouts`/`codePreferredWidths` `localStorage` stand-in from
+    the first Editor-mode pass has been fully replaced)
   - Editing engine: CodeMirror 6 (ESM via CDN, no bundler); each open file
     keeps its own `EditorState` (independent undo history) inside a given
     Editor pane; tabs swap state via `view.setState()`
@@ -355,11 +372,33 @@ POST /api/system/stop       no body → {ok: true}
     controls; skills UI (picker, keyword auto-suggest chip, active-skill
     status banner); ghost-text and inline diff-review are CM6 decorations;
     `Cmd/Ctrl+K` opens a command palette
-  - **This entire Editor-mode pass is mock-only**: `MockFileProvider`/
-    `MockAIProvider` (`web/code/providers.js`) back everything — no real
-    `/api/fs/*` or Ollama calls yet. A follow-up backend-wiring pass swaps
-    in `RealFileProvider`/`RealAIProvider` and a `code_layouts` DB table
-    with the same shape as the `localStorage` stand-in
+  - **Backend-wired** (`web/code/providers.js`): `RealFileProvider` drives
+    the File-Tree and Editor panes off the real `/api/fs*` endpoints (same
+    sandbox as Chat/Agents' `read_file`/`write_file`/`list_dir` tools);
+    `RealAIProvider` streams real Ollama chat with tool-calling. Code chat
+    panes get an Agent select (toolbar dropdown, sourced from `/api/agents`)
+    that seeds system prompt/tools/model for that pane's conversation, and a
+    real tool-calling loop (`read_file`/`list_dir`/`search_files`/
+    `run_command`, gated by the agent's file/shell toggles, plus `ask_user`
+    always available and `propose_edit`/`propose_new_file` when file access
+    is on). `propose_edit`/`propose_new_file` route through the same
+    multi-hunk diff review (`proposeDiff()` in `web/code/editor.js`) as a
+    manual edit: hunks render as inline CM6 accept/reject widgets, and the
+    buffer is locked read-only (both `EditorView.editable` and
+    `EditorState.readOnly`, to also block keymap-bound edit commands and the
+    ghost-text Tab-accept) while any hunk in that file is under review. The
+    per-pane auto-accept mode (`Off`/`All`/`Risky`) short-circuits that
+    review: `All` applies every hunk immediately; `Risky` auto-applies when
+    the target file is already open in some Editor pane (edit stays visible
+    for the user to catch), and falls back to manual review when it isn't
+    (`shouldAutoAccept()` in `ai-panel.js` treats "not open anywhere" as the
+    risky case). Ghost text (`web/code/editor.js`'s debounced CM6 completion
+    trigger) calls `POST /api/code/ghost-text`, tier-gated by the `codeGhostTextTier`
+    setting (Settings tab); Tab accepts, Esc dismisses, and it's likewise
+    suppressed while the buffer is read-only. `MockFileProvider`/
+    `MockAIProvider` remain in `providers.js` (unused by `panes.js`, kept
+    for reference/future reuse) — `RealAIProvider.listSkills()` still
+    delegates to `MockAIProvider`'s static skill list.
 
   **Debug** (job/worker monitor + system reference — the monitor promoted out
   of Pipelines, the reference panel absorbed from the now-removed standalone
@@ -488,6 +527,10 @@ POST /api/system/stop       no body → {ok: true}
                     status ∈ queued|running|done|failed|paused|cancelling|cancelled
 
   code_sessions     id, root_path, open_files, active_file, updated_at
+  code_layouts      name (PK), panes_json, updated_at
+  code_layout_state id (PK, default 'default'), current_layout_name, panes_json
+                    (default '[]'), preferred_widths_json (default '{}'), updated_at
+                    — singleton row ('default'), auto-inserted by init_db()
 
   network_hosts     id, name, ip, mac, ollama_port, priority, enabled, created_at,
                     os (macos|linux|windows, nullable), gpu_arch (nvidia|apple_silicon|
@@ -598,6 +641,23 @@ POST /api/system/stop       no body → {ok: true}
   POST /api/fs/rename             rename file
   GET  /api/code-session          active code session
   PUT  /api/code-session          update session
+  GET  /api/code-layouts          list saved layouts → [{name, panes}]
+  POST /api/code-layouts          upsert a named layout, body: {name, panes} →
+                                  {ok:true} | {error:'name required'} (400)
+  DELETE /api/code-layouts/:name  delete a named layout → {ok:true}
+  GET  /api/code-layout-state     the single current-arrangement row →
+                                  {currentLayoutName, panes, preferredWidths}
+                                  (defaults to {null, [], {}} if never written)
+  PUT  /api/code-layout-state     upsert the current-arrangement row, body:
+                                  {currentLayoutName, panes, preferredWidths} → {ok:true}
+  POST /api/code/ghost-text       body: {prefix, suffix, path} → {completion} |
+                                  {completion:'', error} on failure (never a non-200
+                                  status — errors are reported in-body so the CM6
+                                  trigger can fail silently); model tier resolved from
+                                  settings.codeGhostTextTier (default 'local') via the
+                                  same resolve_llm()/model_router used by pipelines;
+                                  language inferred from path's extension for the
+                                  prompt; response has markdown code fences stripped
 
   POST /api/system/update         body: raw zip bytes → stage+swap web/server/agent →
                                   touch data/.restart → {ok:true} | {error}
