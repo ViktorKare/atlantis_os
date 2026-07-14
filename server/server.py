@@ -192,6 +192,23 @@ def init_db():
                 started_at    TEXT,
                 finished_at   TEXT
             );
+            CREATE TABLE IF NOT EXISTS pipeline_turns (
+                id             TEXT PRIMARY KEY,
+                run_id         TEXT NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+                turn_index     INTEGER NOT NULL,
+                agent_id       TEXT,
+                agent_name     TEXT NOT NULL DEFAULT '',
+                action         TEXT NOT NULL,
+                instructions   TEXT,
+                reasoning      TEXT,
+                output         TEXT,
+                workspace_diff TEXT,
+                verify_status  TEXT,
+                superseded_by  INTEGER,
+                status         TEXT NOT NULL DEFAULT 'pending',
+                started_at     TEXT,
+                finished_at    TEXT
+            );
             CREATE TABLE IF NOT EXISTS code_sessions (
                 id          TEXT PRIMARY KEY DEFAULT 'default',
                 root_path   TEXT NOT NULL DEFAULT '',
@@ -258,6 +275,14 @@ def init_db():
             "ALTER TABLE network_hosts ADD COLUMN ssh_user TEXT NOT NULL DEFAULT 'viktor'",
             "ALTER TABLE network_hosts ADD COLUMN capacity TEXT NOT NULL DEFAULT 'full'",
             "ALTER TABLE agents ADD COLUMN fallback_model TEXT DEFAULT ''",
+            'ALTER TABLE agents ADD COLUMN role            TEXT',
+            'ALTER TABLE agents ADD COLUMN agent_goal      TEXT',
+            'ALTER TABLE agents ADD COLUMN expected_output TEXT',
+            "ALTER TABLE pipelines ADD COLUMN mode           TEXT NOT NULL DEFAULT 'fixed'",
+            "ALTER TABLE pipelines ADD COLUMN roster         TEXT NOT NULL DEFAULT '[]'",
+            'ALTER TABLE pipelines ADD COLUMN verify_command TEXT',
+            'ALTER TABLE pipelines ADD COLUMN max_turns      INTEGER NOT NULL DEFAULT 20',
+            'ALTER TABLE pipelines ADD COLUMN work_dir       TEXT',
         ]:
             try:
                 db.execute(sql)
