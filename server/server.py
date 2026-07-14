@@ -742,6 +742,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p == '/api/fs/rename':         self._fs_rename(body)
         elif p == '/api/code-layouts':      self._post_code_layout(body)
         elif p == '/api/tools/exec':        self._tools_exec(body)
+        elif p == '/api/code/ghost-text':    self._code_ghost_text(body)
         elif p == '/api/debug/restart':     self._restart_worker()
         elif p == '/api/system/update':     self._post_system_update(body)
         elif p == '/api/system/restart':    self._post_system_restart()
@@ -2279,6 +2280,46 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         args = (body or {}).get('args') or {}
         allowed = set((body or {}).get('allowed') or []) or None
         self._json(agent_tools.exec_tool(name, args, allowed=allowed))
+
+    def _code_ghost_text(self, body):
+        prefix = body.get('prefix', '')
+        suffix = body.get('suffix', '')
+        path   = body.get('path', '')
+        try:
+            with get_db() as db:
+                rows = db.execute('SELECT key, value FROM settings').fetchall()
+            cfg = {}
+            for r in rows:
+                try:
+                    cfg[r['key']] = json.loads(r['value'])
+                except Exception:
+                    cfg[r['key']] = r['value']
+            sys.path.insert(0, str(ROOT_DIR / 'agent'))
+            import worker as agent_tools
+            tier   = cfg.get('codeGhostTextTier') or 'local'
+            router = agent_tools.load_router(cfg)
+            provider, model, endpoint_or_key = agent_tools.resolve_llm(tier, [], router, cfg, cfg.get('endpoint', ''))
+            lang = path.rsplit('.', 1)[-1].lower() if '.' in path else ''
+            prompt = (
+                f'Complete the following {lang} code. Output ONLY the code that continues '
+                f'at <CURSOR>, with no explanation and no markdown fences.\n\n'
+                f'{prefix}<CURSOR>{suffix}'
+            )
+            messages = [{'role': 'user', 'content': prompt}]
+            if provider == 'ollama':
+                output, err = agent_tools.ollama_once(endpoint_or_key, model, messages)
+            elif provider == 'anthropic':
+                output, err = agent_tools.anthropic_once(endpoint_or_key, model, messages)
+            else:
+                output, err = None, f'Unsupported provider for ghost-text: {provider}'
+            if err:
+                return self._json({'completion': '', 'error': err})
+            completion = (output or '').strip()
+            completion = re.sub(r'^```[a-zA-Z0-9]*\n?', '', completion)
+            completion = re.sub(r'\n?```$', '', completion)
+            self._json({'completion': completion})
+        except Exception as e:
+            self._json({'completion': '', 'error': str(e)})
 
     def _exec_pipeline_tool(self, name, args):
         """Execute a pipeline tool call server-side, return result dict."""
