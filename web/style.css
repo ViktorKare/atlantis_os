@@ -2992,6 +2992,89 @@ button { font-family: inherit; }
   white-space: nowrap;
 }
 
+.code-tree-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.code-root-label {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.code-tree-change-root-btn {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.code-tree-change-root-btn:hover { color: var(--text); background: var(--bg2); }
+
+.code-folder-picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.code-folder-picker {
+  width: 480px;
+  max-width: 90vw;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+}
+.code-folder-picker-path {
+  font-family: 'Fira Code','Cascadia Code',Consolas,monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 6px 8px;
+  background: var(--bg3);
+  border-radius: 6px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.code-folder-picker-error { font-size: 12px; color: var(--danger); }
+.code-folder-picker-error.hidden { display: none; }
+.code-folder-picker-list {
+  flex: 1;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.code-folder-picker-item { padding: 6px 10px; cursor: pointer; }
+.code-folder-picker-item:hover { background: var(--bg3); }
+.code-folder-picker-empty { padding: 6px 10px; color: var(--text-dim); }
+.code-folder-picker-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.code-folder-picker-actions button {
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text);
+  cursor: pointer;
+}
+.code-folder-picker-select { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.code-folder-picker-up { margin-right: auto; }
+
 /* ── Tool call bubbles ──────────────────────────────────────────────────────── */
 .message.tool-block-msg {
   gap: 6px;

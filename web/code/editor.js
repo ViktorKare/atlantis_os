@@ -33,6 +33,81 @@ function detectLangLabel(path) {
     py: 'python', css: 'css', html: 'html', json: 'json', md: 'markdown' }[ext] || 'plaintext';
 }
 
+function openFolderPicker(fileProvider, startPath, onSelect) {
+  return new Promise(resolve => {
+    let browsePath = startPath || '';
+    const overlay = document.createElement('div');
+    overlay.className = 'code-folder-picker-overlay';
+    overlay.innerHTML = `
+      <div class="code-folder-picker">
+        <div class="code-folder-picker-path"></div>
+        <div class="code-folder-picker-error hidden"></div>
+        <ul class="code-folder-picker-list"></ul>
+        <div class="code-folder-picker-actions">
+          <button type="button" class="code-folder-picker-up">.. Up</button>
+          <button type="button" class="code-folder-picker-select">Select this folder</button>
+          <button type="button" class="code-folder-picker-cancel">Cancel</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    const pathEl    = overlay.querySelector('.code-folder-picker-path');
+    const errEl     = overlay.querySelector('.code-folder-picker-error');
+    const listEl    = overlay.querySelector('.code-folder-picker-list');
+    const upBtn     = overlay.querySelector('.code-folder-picker-up');
+    const selectBtn = overlay.querySelector('.code-folder-picker-select');
+    const cancelBtn = overlay.querySelector('.code-folder-picker-cancel');
+
+    function close(result) {
+      overlay.remove();
+      resolve(result);
+    }
+
+    async function load(path) {
+      errEl.classList.add('hidden');
+      try {
+        const entries = await fileProvider.list(path);
+        browsePath = path;
+        pathEl.textContent = browsePath || '/';
+        const dirs = entries.filter(e => e.type === 'dir');
+        listEl.innerHTML = dirs.length
+          ? dirs.map(e => `<li class="code-folder-picker-item" data-path="${e.path}">${e.name}</li>`).join('')
+          : '<li class="code-folder-picker-empty">No subfolders</li>';
+        listEl.querySelectorAll('.code-folder-picker-item').forEach(li =>
+          li.addEventListener('click', () => load(li.dataset.path))
+        );
+      } catch (e) {
+        errEl.textContent = e.message || String(e);
+        errEl.classList.remove('hidden');
+      }
+    }
+
+    upBtn.addEventListener('click', () => {
+      const parent = browsePath.replace(/\/$/, '').split('/').slice(0, -1).join('/') || '/';
+      load(parent);
+    });
+
+    selectBtn.addEventListener('click', async () => {
+      errEl.classList.add('hidden');
+      selectBtn.disabled = true;
+      try {
+        await onSelect(browsePath);
+        close(true);
+      } catch (e) {
+        errEl.textContent = e.message || String(e);
+        errEl.classList.remove('hidden');
+      } finally {
+        selectBtn.disabled = false;
+      }
+    });
+
+    cancelBtn.addEventListener('click', () => close(false));
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(false); });
+
+    load(browsePath);
+  });
+}
+
 class GhostWidget extends WidgetType {
   constructor(text) { super(); this.text = text; }
   eq(other) { return other.text === this.text; }
@@ -351,13 +426,18 @@ export function createEditorPane(bodyEl, { fileProvider, onFocus } = {}) {
   };
 }
 
-export function createTreePane(bodyEl, { fileProvider, openInEditor, rootPath = '', rootLabel = 'project' } = {}) {
+export function createTreePane(bodyEl, { fileProvider, openInEditor, onChangeRoot, rootPath = '', rootLabel = 'project' } = {}) {
   bodyEl.innerHTML = `
     <div class="code-tree-header">
       <span class="code-root-label">${rootLabel}</span>
+      <button type="button" class="code-tree-change-root-btn" title="Change workspace folder">Change…</button>
     </div>
     <div class="code-tree"></div>`;
-  const treeEl = bodyEl.querySelector('.code-tree');
+  const treeEl    = bodyEl.querySelector('.code-tree');
+  const labelEl   = bodyEl.querySelector('.code-root-label');
+  const changeBtn = bodyEl.querySelector('.code-tree-change-root-btn');
+
+  let currentRootPath = rootPath;
 
   async function renderLevel(container, dirPath) {
     const entries = await fileProvider.list(dirPath);
@@ -395,7 +475,23 @@ export function createTreePane(bodyEl, { fileProvider, openInEditor, rootPath = 
     container.appendChild(ul);
   }
 
-  renderLevel(treeEl, rootPath);
+  function renderRoot() {
+    treeEl.innerHTML = '';
+    renderLevel(treeEl, currentRootPath);
+  }
 
-  return { destroy() { bodyEl.innerHTML = ''; } };
+  changeBtn.addEventListener('click', () => {
+    openFolderPicker(fileProvider, currentRootPath, path => onChangeRoot?.(path));
+  });
+
+  renderRoot();
+
+  return {
+    destroy() { bodyEl.innerHTML = ''; },
+    refresh(newRootPath, newRootLabel) {
+      currentRootPath = newRootPath;
+      labelEl.textContent = newRootLabel;
+      renderRoot();
+    },
+  };
 }
