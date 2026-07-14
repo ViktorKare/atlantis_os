@@ -83,7 +83,12 @@ function openFolderPicker(fileProvider, startPath, onSelect) {
     }
 
     upBtn.addEventListener('click', () => {
-      const parent = browsePath.replace(/\/$/, '').split('/').slice(0, -1).join('/') || '/';
+      const trimmed = browsePath.replace(/\/$/, '');
+      if (!trimmed) { load(''); return; }
+      const isAbsolute = trimmed.startsWith('/');
+      const segments = trimmed.split('/').filter(Boolean);
+      segments.pop();
+      const parent = isAbsolute ? '/' + segments.join('/') : segments.join('/');
       load(parent);
     });
 
