@@ -66,6 +66,7 @@ const ghostKeymap = keymap.of([
   {
     key: 'Tab',
     run(view) {
+      if (view.state.readOnly) return false;
       const deco = view.state.field(ghostField, false);
       if (!deco || deco.size === 0) return false;
       let text = null;
