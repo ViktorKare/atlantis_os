@@ -118,3 +118,49 @@ export class RealFileProvider {
     return { created: true };
   }
 }
+
+export class RealAIProvider {
+  async listModels() {
+    try {
+      const res = await fetch(`${await resolveOllama()}/api/tags`);
+      const data = await res.json();
+      return (data.models || []).map(m => m.name);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  async listSkills() {
+    return new MockAIProvider().listSkills();
+  }
+
+  async *chat({ messages, model, tools }) {
+    const body = { model, messages, stream: true };
+    if (tools?.length) body.tools = tools;
+    const res = await fetch(`${await resolveOllama()}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let toolCalls = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let chunk;
+        try { chunk = JSON.parse(line); } catch (_) { continue; }
+        if (chunk.message?.tool_calls?.length) toolCalls.push(...chunk.message.tool_calls);
+        if (chunk.message?.content) yield chunk.message.content;
+      }
+    }
+    if (toolCalls.length) yield { toolCalls };
+  }
+}
