@@ -189,13 +189,14 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     if (manifest) apiMessages.push({ role: 'system', content: manifest });
     apiMessages.push(...history);
 
+    let assistantDiv = null;
     try {
       let looping = true;
       while (looping) {
         looping = false;
         let fullText = '';
         let turnToolCalls = null;
-        const assistantDiv = appendBubble('assistant', '▋');
+        assistantDiv = appendBubble('assistant', '▋');
         for await (const chunk of aiProvider.chat({ messages: apiMessages, model, tools })) {
           if (typeof chunk === 'string') {
             fullText += chunk;
@@ -226,7 +227,11 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
         }
       }
     } catch (err) {
-      appendBubble('assistant', `*Error: ${err?.message || 'request failed'}*`);
+      if (assistantDiv) {
+        assistantDiv.innerHTML = marked.parse(`*Error: ${err?.message || 'request failed'}*`);
+      } else {
+        appendBubble('assistant', `*Error: ${err?.message || 'request failed'}*`);
+      }
     } finally {
       busy = false;
       sendBtn.disabled = false;
