@@ -157,7 +157,10 @@ const diffField = StateField.define({
     }
     return tr.docChanged ? deco.map(tr.changes) : deco;
   },
-  provide: f => EditorView.decorations.from(f),
+  provide: f => [
+    EditorView.decorations.from(f),
+    EditorView.editable.from(f, deco => deco.size === 0),
+  ],
 });
 
 function computeHunks(oldContent, newContent) {
