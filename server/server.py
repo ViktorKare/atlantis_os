@@ -698,6 +698,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p == '/api/fs':                self._fs_list()
         elif p == '/api/fs/read':           self._fs_read()
         elif p == '/api/code-session':      self._get_code_session()
+        elif p == '/api/code-layouts':      self._get_code_layouts()
+        elif p == '/api/code-layout-state': self._get_code_layout_state()
         else:
             super().do_GET()
 
@@ -738,6 +740,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p == '/api/fs/write':          self._fs_write(body)
         elif p == '/api/fs/mkdir':          self._fs_mkdir(body)
         elif p == '/api/fs/rename':         self._fs_rename(body)
+        elif p == '/api/code-layouts':      self._post_code_layout(body)
         elif p == '/api/tools/exec':        self._tools_exec(body)
         elif p == '/api/debug/restart':     self._restart_worker()
         elif p == '/api/system/update':     self._post_system_update(body)
@@ -763,12 +766,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p.startswith('/api/pipelines/'):
             self._put_pipeline(p.split('/')[3], body)
         elif p == '/api/code-session':      self._put_code_session(body)
+        elif p == '/api/code-layout-state': self._put_code_layout_state(body)
         else:
             self.send_error(404)
 
     def do_DELETE(self):
         p = self.path.split('?')[0]
         if   p == '/api/data':              self._clear_data()
+        elif p.startswith('/api/code-layouts/'):
+            self._delete_code_layout(urllib.parse.unquote(p.split('/')[3]))
         elif p.startswith('/api/agents/'):  self._delete_agent(p.split('/')[3])
         elif p.startswith('/api/hosts/'):   self._delete_host(p.split('/')[3])
         elif p.startswith('/api/threads/') and p.endswith('/messages'):
@@ -2662,6 +2668,59 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 body.get('rootPath') or str(Path.home()),
                 json.dumps(body.get('openFiles', [])),
                 body.get('activeFile'),
+                now,
+            ))
+        self._json({'ok': True})
+
+    def _get_code_layouts(self):
+        with get_db() as db:
+            rows = rows_to_list(db.execute('SELECT name, panes_json FROM code_layouts ORDER BY name').fetchall())
+        self._json([{'name': r['name'], 'panes': json.loads(r['panes_json'])} for r in rows])
+
+    def _post_code_layout(self, body):
+        name = (body.get('name') or '').strip()
+        if not name:
+            return self._json({'error': 'name required'}, 400)
+        now = datetime.datetime.now().isoformat()
+        with get_db() as db:
+            db.execute(
+                'INSERT INTO code_layouts (name, panes_json, updated_at) VALUES (?,?,?) '
+                'ON CONFLICT(name) DO UPDATE SET panes_json=excluded.panes_json, updated_at=excluded.updated_at',
+                (name, json.dumps(body.get('panes', [])), now)
+            )
+        self._json({'ok': True})
+
+    def _delete_code_layout(self, name):
+        with get_db() as db:
+            db.execute('DELETE FROM code_layouts WHERE name=?', (name,))
+        self._json({'ok': True})
+
+    def _get_code_layout_state(self):
+        with get_db() as db:
+            row = db.execute('SELECT * FROM code_layout_state WHERE id=?', ('default',)).fetchone()
+        if not row:
+            return self._json({'currentLayoutName': None, 'panes': [], 'preferredWidths': {}})
+        self._json({
+            'currentLayoutName': row['current_layout_name'],
+            'panes': json.loads(row['panes_json'] or '[]'),
+            'preferredWidths': json.loads(row['preferred_widths_json'] or '{}'),
+        })
+
+    def _put_code_layout_state(self, body):
+        now = datetime.datetime.now().isoformat()
+        with get_db() as db:
+            db.execute('''
+                INSERT INTO code_layout_state (id, current_layout_name, panes_json, preferred_widths_json, updated_at)
+                VALUES ('default', ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    current_layout_name=excluded.current_layout_name,
+                    panes_json=excluded.panes_json,
+                    preferred_widths_json=excluded.preferred_widths_json,
+                    updated_at=excluded.updated_at
+            ''', (
+                body.get('currentLayoutName'),
+                json.dumps(body.get('panes', [])),
+                json.dumps(body.get('preferredWidths', {})),
                 now,
             ))
         self._json({'ok': True})
