@@ -5,6 +5,7 @@ import { createChatPane, initCommandPalette } from './ai-panel.js';
 const fileProvider = new RealFileProvider();
 const aiProvider   = new RealAIProvider();
 let rootLabel = 'project';
+let rootPath  = '';
 
 const PANE_TITLES = { chat: 'Chat', editor: 'Editor', tree: 'File Tree' };
 const DEFAULT_WIDTHS = { chat: 340, editor: 640, tree: 240 };
@@ -38,6 +39,16 @@ function isFileOpenAnywhere(path) {
   return panes.some(p => p.type === 'editor' && p.controller?.getOpenFiles?.().includes(path));
 }
 
+async function changeWorkspaceFolder(newPath) {
+  await api('PUT', '/api/code-session', { rootPath: newPath }); // throws on failure — caller (the picker modal) shows it inline
+  rootPath = newPath;
+  rootLabel = newPath.split('/').filter(Boolean).pop() || '/';
+  panes.forEach(p => {
+    if (p.type === 'tree') p.controller?.refresh?.(rootPath, rootLabel);
+    if (p.type === 'editor') p.controller?.closeAllTabs?.();
+  });
+}
+
 function openInNearestEditor(path) {
   let target = panes.find(p => p.id === focusedEditorPaneId && p.type === 'editor');
   if (!target) target = panes.find(p => p.type === 'editor');
@@ -54,7 +65,7 @@ function mountPane(pane) {
   } else if (pane.type === 'editor') {
     pane.controller = createEditorPane(body, { fileProvider, onFocus: () => { focusedEditorPaneId = pane.id; } });
   } else if (pane.type === 'tree') {
-    pane.controller = createTreePane(body, { fileProvider, openInEditor: openInNearestEditor, rootPath: '', rootLabel });
+    pane.controller = createTreePane(body, { fileProvider, openInEditor: openInNearestEditor, onChangeRoot: changeWorkspaceFolder, rootPath, rootLabel });
   }
 }
 
@@ -287,7 +298,8 @@ async function initCode() {
   inited = true;
   try {
     const session = await api('GET', '/api/code-session');
-    rootLabel = (session.root_path || '').split('/').filter(Boolean).pop() || '/';
+    rootPath  = session.root_path || '';
+    rootLabel = rootPath.split('/').filter(Boolean).pop() || '/';
   } catch (_) {}
   wireStaticControls();
   initCommandPalette({ addPane, applyLayoutByName, getFocusedEditor });
