@@ -201,7 +201,11 @@ def control(mode):
             print(f'Not running — starting fresh. Open http://localhost:{config_port()}')
     elif mode == 'start':
         if alive:
-            print('Already running.')
+            if port_open('127.0.0.1', config_port()):
+                print('Already running.')
+            else:
+                RESTART_FLAG.touch()
+                print(f'Supervisor was running but stopped — restarting children. Open http://localhost:{config_port()}')
         else:
             spawn_detached([sys.executable, str(ROOT_DIR / 'launcher.py')])
             print(f'Started. Open http://localhost:{config_port()}')
