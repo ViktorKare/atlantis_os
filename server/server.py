@@ -876,10 +876,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         tools = json.dumps(body.get('tools') or {})
         with get_db() as db:
             db.execute(
-                'INSERT INTO agents (id,name,model,system_prompt,temperature,top_p,context_len,tools,fallback_model) VALUES (?,?,?,?,?,?,?,?,?)',
+                'INSERT INTO agents (id,name,model,system_prompt,temperature,top_p,context_len,tools,fallback_model,role,agent_goal,expected_output) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
                 (body['id'], body['name'], body.get('model',''), body.get('systemPrompt',''),
                  body.get('temperature',0.7), body.get('topP',0.9), body.get('contextLen',4096), tools,
-                 body.get('fallbackModel',''))
+                 body.get('fallbackModel',''), body.get('role',''), body.get('agentGoal',''),
+                 body.get('expectedOutput',''))
             )
         self._json({'ok': True})
 
@@ -887,10 +888,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         tools = json.dumps(body.get('tools') or {})
         with get_db() as db:
             db.execute(
-                'UPDATE agents SET name=?,model=?,system_prompt=?,temperature=?,top_p=?,context_len=?,tools=?,fallback_model=? WHERE id=?',
-                (body['name'], body.get('model',''), body.get('systemPrompt',''),
+                'UPDATE agents SET name=?,model=?,system_prompt=?,temperature=?,top_p=?,context_len=?,tools=?,fallback_model=?,role=?,agent_goal=?,expected_output=? WHERE id=?',
+                (body.get('name',''), body.get('model',''), body.get('systemPrompt',''),
                  body.get('temperature',0.7), body.get('topP',0.9), body.get('contextLen',4096), tools,
-                 body.get('fallbackModel',''), id)
+                 body.get('fallbackModel',''), body.get('role',''), body.get('agentGoal',''),
+                 body.get('expectedOutput',''), id)
             )
         self._json({'ok': True})
 
@@ -910,6 +912,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             'systemPrompt': row['system_prompt'], 'temperature': row['temperature'],
             'topP': row['top_p'], 'contextLen': row['context_len'],
             'tools': tools, 'fallbackModel': row['fallback_model'] or '',
+            'role': row['role'] or '', 'agentGoal': row['agent_goal'] or '',
+            'expectedOutput': row['expected_output'] or '',
         }
 
     # ── Network hosts ──────────────────────────────────────────────────────
