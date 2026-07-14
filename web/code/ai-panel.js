@@ -274,6 +274,7 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
           // Switch to the target file in the focused Editor pane if it isn't already
           // the active tab there — opens it fresh (real content via fileProvider.read)
           // if it wasn't open in this pane at all yet.
+          const autoAccept = shouldAutoAccept(params.path, isFileOpenAnywhere);
           if (editorCtrl.getActiveFile() !== params.path) await editorCtrl.openFile(params.path);
           const oldContent = (await fileProvider.read(params.path).catch(() => null));
           if (oldContent == null) return `Error: could not read ${params.path}`;
@@ -284,15 +285,14 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
           const newContent = params.replace_all
             ? oldContent.split(params.old_string).join(params.new_string)
             : oldContent.slice(0, idx) + params.new_string + oldContent.slice(idx + params.old_string.length);
-          const autoAccept = shouldAutoAccept(params.path, isFileOpenAnywhere);
           const { applied, hunkCount } = await editorCtrl.proposeDiff(newContent, { autoAccept });
           return applied ? `Applied ${hunkCount} hunk(s) to ${params.path}` : `Proposed ${hunkCount} hunk(s) to ${params.path}, shown to the user for review`;
         }
         case 'propose_new_file': {
           let editorCtrl = getFocusedEditor();
           if (!editorCtrl) return 'Error: no Editor pane open';
-          await editorCtrl.openFile(params.path, { initialContent: '' });
           const autoAccept = shouldAutoAccept(params.path, isFileOpenAnywhere);
+          await editorCtrl.openFile(params.path, { initialContent: '' });
           const { applied, hunkCount } = await editorCtrl.proposeDiff(params.content, { autoAccept });
           return applied ? `Created ${params.path}` : `Proposed new file ${params.path} (${hunkCount} hunk(s)), shown to the user for review`;
         }
