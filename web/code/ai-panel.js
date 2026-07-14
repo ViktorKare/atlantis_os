@@ -27,36 +27,7 @@ function buildCodeToolManifest(toolPerms) {
   return lines.join('\n');
 }
 
-async function executeCodeTool(name, params, ctx) {
-  try {
-    switch (name) {
-      case 'read_file': {
-        const r = await api('POST', '/api/tools/exec', { name: 'read_file', args: params });
-        return typeof r === 'string' ? r : (r.content ?? JSON.stringify(r));
-      }
-      case 'list_dir': {
-        const r = await api('POST', '/api/tools/exec', { name: 'list_files', args: params });
-        return typeof r === 'string' ? r : JSON.stringify(r);
-      }
-      case 'search_files':
-      case 'run_command': {
-        const r = await api('POST', '/api/tools/exec', { name, args: params });
-        return typeof r === 'string' ? r : JSON.stringify(r);
-      }
-      case 'propose_edit':
-      case 'propose_new_file':
-        return 'Error: propose tools not yet wired (Task 12)';
-      case 'ask_user':
-        return 'Error: ask_user not yet wired (Task 13)';
-      default:
-        return `Unknown tool: ${name}`;
-    }
-  } catch (e) {
-    return `Tool error: ${e.message}`;
-  }
-}
-
-export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEditor } = {}) {
+export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEditor, isFileOpenAnywhere } = {}) {
   bodyEl.innerHTML = `
     <div class="code-chat-toolbar">
       <select class="code-agent-select"><option value="">No agent</option></select>
@@ -216,7 +187,7 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
           apiMessages.push({ role: 'assistant', content: '', tool_calls: turnToolCalls });
           if (fullText) history.push({ role: 'assistant', content: fullText });
           for (const tc of turnToolCalls) {
-            const result = await executeCodeTool(tc.function.name, tc.function.arguments ?? {}, { autoMode: autoBtn.dataset.mode });
+            const result = await executeCodeTool(tc.function.name, tc.function.arguments ?? {});
             apiMessages.push({ role: 'tool', content: String(result) });
           }
           looping = true;
@@ -236,6 +207,66 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
       busy = false;
       sendBtn.disabled = false;
     }
+  }
+
+  async function executeCodeTool(name, params) {
+    try {
+      switch (name) {
+        case 'read_file': {
+          const r = await api('POST', '/api/tools/exec', { name: 'read_file', args: params });
+          return typeof r === 'string' ? r : (r.content ?? JSON.stringify(r));
+        }
+        case 'list_dir': {
+          const r = await api('POST', '/api/tools/exec', { name: 'list_files', args: params });
+          return typeof r === 'string' ? r : JSON.stringify(r);
+        }
+        case 'search_files':
+        case 'run_command': {
+          const r = await api('POST', '/api/tools/exec', { name, args: params });
+          return typeof r === 'string' ? r : JSON.stringify(r);
+        }
+        case 'propose_edit': {
+          const editorCtrl = getFocusedEditor();
+          if (!editorCtrl) return 'Error: no Editor pane open';
+          // Switch to the target file in the focused Editor pane if it isn't already
+          // the active tab there — opens it fresh (real content via fileProvider.read)
+          // if it wasn't open in this pane at all yet.
+          if (editorCtrl.getActiveFile() !== params.path) await editorCtrl.openFile(params.path);
+          const oldContent = (await fileProvider.read(params.path).catch(() => null));
+          if (oldContent == null) return `Error: could not read ${params.path}`;
+          const idx = params.replace_all
+            ? null
+            : (() => { const i = oldContent.indexOf(params.old_string); return i === oldContent.lastIndexOf(params.old_string) ? i : -1; })();
+          if (!params.replace_all && idx === -1) return 'Error: old_string must occur exactly once (or set replace_all)';
+          const newContent = params.replace_all
+            ? oldContent.split(params.old_string).join(params.new_string)
+            : oldContent.slice(0, idx) + params.new_string + oldContent.slice(idx + params.old_string.length);
+          const autoAccept = shouldAutoAccept(params.path, isFileOpenAnywhere);
+          const { applied, hunkCount } = await editorCtrl.proposeDiff(newContent, { autoAccept });
+          return applied ? `Applied ${hunkCount} hunk(s) to ${params.path}` : `Proposed ${hunkCount} hunk(s) to ${params.path}, shown to the user for review`;
+        }
+        case 'propose_new_file': {
+          let editorCtrl = getFocusedEditor();
+          if (!editorCtrl) return 'Error: no Editor pane open';
+          await editorCtrl.openFile(params.path, { initialContent: '' });
+          const autoAccept = shouldAutoAccept(params.path, isFileOpenAnywhere);
+          const { applied, hunkCount } = await editorCtrl.proposeDiff(params.content, { autoAccept });
+          return applied ? `Created ${params.path}` : `Proposed new file ${params.path} (${hunkCount} hunk(s)), shown to the user for review`;
+        }
+        default:
+          return `Unknown tool: ${name}`;
+      }
+    } catch (e) {
+      return `Tool error: ${e.message}`;
+    }
+  }
+
+  function shouldAutoAccept(path, isFileOpenAnywhereFn) {
+    const mode = autoBtn.dataset.mode;
+    if (mode === 'off') return false;
+    if (mode === 'all') return true;
+    const risky = !isFileOpenAnywhereFn?.(path); // 'risky' mode: auto-accept unless risky
+    return !risky;
   }
 
   sendBtn.addEventListener('click', sendMessage);
