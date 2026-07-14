@@ -691,16 +691,17 @@ def run_verification(pipeline, roster_agents, work_root, run_llm_fn, turn_index)
             3)
 
 def verification_satisfied(turns):
-    """True only if the most recent verify turn passed and no invoke turn has
-    landed changes since it. `turns` must be live (non-superseded), ordered
-    by turn_index — i.e. exactly what get_live_turns() returns."""
-    last_verify_idx = None
+    """True only if the most recent verify turn must exist, be the latest verify
+    attempt, and have passed, and no invoke turn has landed changes since it.
+    `turns` must be live (non-superseded), ordered by turn_index — i.e. exactly
+    what get_live_turns() returns."""
+    last_verify = None
     for t in turns:
-        if t['action'] == 'verify' and t.get('verify_status') == 'passed':
-            last_verify_idx = t['turn_index']
-    if last_verify_idx is None:
+        if t['action'] == 'verify':
+            last_verify = t
+    if last_verify is None or last_verify.get('verify_status') != 'passed':
         return False
-    return not any(t['action'] == 'invoke' and t['turn_index'] > last_verify_idx for t in turns)
+    return not any(t['action'] == 'invoke' and t['turn_index'] > last_verify['turn_index'] for t in turns)
 
 _HW_NUM_CTX = None
 
