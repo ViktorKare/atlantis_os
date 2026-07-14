@@ -2718,7 +2718,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not p.is_dir():
                 return self._json({'error': f'Not a directory: {p}'}, 400)
             root_path = str(p)
-            _write_config_root_path(root_path)
+            try:
+                _write_config_root_path(root_path)
+            except Exception as e:
+                return self._json({'error': f'Could not persist root path: {e}'}, 500)
         with get_db() as db:
             db.execute('''
                 INSERT INTO code_sessions (id, root_path, open_files, active_file, updated_at)
