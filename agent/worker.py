@@ -4,7 +4,7 @@ Atlantis OS — Job Worker Daemon
 Run alongside server.py: python3 worker.py
 Polls the jobs table and executes pipeline runs in the background.
 """
-import json, re, sqlite3, time, datetime, difflib, hashlib, urllib.request, urllib.parse, urllib.error, signal, subprocess, sys, contextlib
+import json, os, re, sqlite3, time, datetime, difflib, hashlib, urllib.request, urllib.parse, urllib.error, signal, subprocess, sys, contextlib
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent          # agent/
@@ -183,12 +183,14 @@ def git_churn_stat(work_root, cap=2000):
     stat = git_run(work_root, 'diff', '--cached', '--stat')
     return (stat or '').strip()[:cap]
 
-def _under_workspace(resolved, work_root):
-    """True when resolved is work_root itself or a descendant of it, comparing
-    real (symlink-followed) paths so a workspace that is itself a symlink
-    (e.g. mounted-drive workspaces) still matches its own contents."""
+def _under_workspace(candidate, work_root):
+    """True when candidate is work_root itself or a descendant of it. Containment is
+    checked on the lexical (un-resolved) path — only collapsing '..' components, not
+    following symlinks — so a symlink anywhere inside the workspace (including the
+    workspace root itself, e.g. mounted-drive workspaces) can point outside it without
+    being rejected, while '..'-based escapes are still blocked."""
     try:
-        resolved.relative_to(Path(work_root).resolve())
+        Path(os.path.normpath(str(candidate))).relative_to(os.path.normpath(str(work_root)))
         return True
     except ValueError:
         return False
@@ -198,15 +200,12 @@ def pipe_path_safe(raw, work_root=None):
         work_root = str(get_fs_root())
     raw = str(raw).strip()
     p = Path(raw)
-    if p.is_absolute():
-        resolved = p.resolve()
-        if not _under_workspace(resolved, work_root):
-            resolved = (Path(work_root) / raw.lstrip('/')).resolve()
-    else:
-        resolved = (Path(work_root) / raw).resolve()
-    if not _under_workspace(resolved, work_root):
-        raise PermissionError(f'Path outside workspace ({work_root}) is not allowed: {resolved}')
-    return resolved
+    candidate = p if p.is_absolute() else (Path(work_root) / raw)
+    if not _under_workspace(candidate, work_root):
+        candidate = Path(work_root) / raw.lstrip('/')
+        if not _under_workspace(candidate, work_root):
+            raise PermissionError(f'Path outside workspace ({work_root}) is not allowed: {candidate}')
+    return candidate.resolve()
 
 def _db_write_guard(p):
     return p.resolve() in (DB_FILE.resolve(), DB_FILE.resolve().with_suffix('.db-wal'),

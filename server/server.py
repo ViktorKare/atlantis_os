@@ -4,7 +4,7 @@ Ollama UI — local server + SQLite persistence + task scheduler.
 Run with: python3 server.py
 """
 from __future__ import annotations
-import json, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib, concurrent.futures, socket, shlex
+import json, os, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib, concurrent.futures, socket, shlex
 from pathlib import Path
 
 BASE_DIR       = Path(__file__).parent           # server/
@@ -2610,13 +2610,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _fs_safe(self, rel, root=None):
         if root is None:
-            root = self._fs_root().resolve()
-        p = Path(rel).resolve() if str(rel).startswith('/') else (root / rel).resolve()
-        # Allow anywhere under the user's home directory — code session root is the displayed tree root, not a security fence
-        home = Path.home().resolve()
-        if not str(p).startswith(str(home)):
-            raise PermissionError(f'Path outside home directory: {p}')
-        return p
+            root = self._fs_root()
+        # Check containment on the lexical (un-resolved) path so a symlink anywhere under home
+        # (e.g. ~/library pointing at a mounted drive) is allowed to point outside home; only
+        # collapse '..' components (no filesystem/symlink access) before the containment check.
+        candidate = Path(rel) if str(rel).startswith('/') else (root / rel)
+        candidate = Path(os.path.normpath(str(candidate)))
+        home = Path.home()
+        try:
+            candidate.relative_to(os.path.normpath(str(home)))
+        except ValueError:
+            raise PermissionError(f'Path outside home directory: {candidate}')
+        return candidate.resolve()
 
     def _fs_list(self):
         qs   = dict(pair.split('=', 1) for pair in self.path.split('?', 1)[1].split('&')) if '?' in self.path else {}
