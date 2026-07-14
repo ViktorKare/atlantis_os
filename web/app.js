@@ -69,7 +69,7 @@ let models   = [];
 let agents   = [];
 let tasks    = [];
 const CODE_SERVER_DEFAULT = `${location.protocol}//${location.hostname}:5001`; // code-server always runs on the same host as this app
-let settings = { endpoint: OLLAMA, showTokenStats: true, showThinking: true, timeoutHours: 5, pipelineManagerModel: '', pipelineMaxRetries: 3, brainPrePrompt: '', agentPrePrompt: '', chatPrePrompt: '', codeServerUrl: CODE_SERVER_DEFAULT, defaultAgentId: '', defaultAgentIdFallback: '', userName: '' };
+let settings = { endpoint: OLLAMA, showTokenStats: true, showThinking: true, timeoutHours: 5, pipelineManagerModel: '', pipelineMaxRetries: 3, brainPrePrompt: '', agentPrePrompt: '', chatPrePrompt: '', codeServerUrl: CODE_SERVER_DEFAULT, defaultAgentId: '', defaultAgentIdFallback: '', userName: '', codeGhostTextTier: 'local' };
 
 let abortController = null;
 let isGenerating    = false;
@@ -207,6 +207,13 @@ function initSettingsForm() {
       agents.map(a => `<option value="${a.id}">${escHtml(a.name)}</option>`).join('');
     defAgentFallbackSel.value = settings.defaultAgentIdFallback || '';
   }
+
+  const ghostTierSel = document.getElementById('setting-code-ghost-tier');
+  if (ghostTierSel) {
+    ghostTierSel.innerHTML = TIER_OPTIONS.map(t =>
+      `<option value="${t}"${(settings.codeGhostTextTier || 'local') === t ? ' selected' : ''}>${TIER_LABELS[t]}</option>`
+    ).join('');
+  }
 }
 
 document.getElementById('save-settings-btn').addEventListener('click', () => {
@@ -224,6 +231,7 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
   settings.codeServerUrl         = document.getElementById('setting-code-server-url')?.value.trim() || CODE_SERVER_DEFAULT;
   settings.defaultAgentId        = document.getElementById('setting-default-agent')?.value || '';
   settings.defaultAgentIdFallback = document.getElementById('setting-default-agent-fallback')?.value || '';
+  settings.codeGhostTextTier    = document.getElementById('setting-code-ghost-tier')?.value || 'local';
   const btn = document.getElementById('save-settings-btn');
   btn.disabled = true;
   saveSettings()
