@@ -125,6 +125,49 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     return div;
   }
 
+  function renderAskUserCard(params) {
+    return new Promise(resolve => {
+      const { question, options = [], allow_multiple: multi = false, allow_free_text: freeText = true } = params || {};
+      const wrap = document.createElement('div');
+      wrap.className = 'message ask-user-card';
+      const optsHtml = options.map((o, i) => `<button class="ask-user-opt" data-idx="${i}" type="button">${escHtml(o)}</button>`).join('');
+      wrap.innerHTML = `
+        <p class="ask-user-question">${escHtml(question || '')}</p>
+        <div class="ask-user-opts">${optsHtml}</div>
+        ${freeText ? `<div class="ask-user-free"><input type="text" class="ask-user-input" placeholder="Or type your own answer…"><button class="ask-user-submit" type="button">Send</button></div>` : ''}`;
+      chatWindow.appendChild(wrap);
+      chatWindow.scrollTop = chatWindow.scrollHeight;
+
+      const selected = new Set();
+      function finish(answer) {
+        wrap.querySelectorAll('button, input').forEach(el => el.disabled = true);
+        wrap.classList.add('answered');
+        resolve(answer);
+      }
+      wrap.querySelectorAll('.ask-user-opt').forEach(btn => {
+        btn.addEventListener('click', () => {
+          if (!multi) return finish(options[Number(btn.dataset.idx)]);
+          btn.classList.toggle('selected');
+          const idx = Number(btn.dataset.idx);
+          selected.has(idx) ? selected.delete(idx) : selected.add(idx);
+        });
+      });
+      if (multi && options.length) {
+        const doneBtn = document.createElement('button');
+        doneBtn.className = 'ask-user-submit';
+        doneBtn.textContent = 'Confirm selection';
+        doneBtn.addEventListener('click', () => finish([...selected].sort().map(i => options[i]).join(', ')));
+        wrap.querySelector('.ask-user-opts').insertAdjacentElement('afterend', doneBtn);
+      }
+      const input = wrap.querySelector('.ask-user-input');
+      const submit = wrap.querySelector('.ask-user-free .ask-user-submit');
+      if (input && submit) {
+        submit.addEventListener('click', () => { if (input.value.trim()) finish(input.value.trim()); });
+        input.addEventListener('keydown', e => { if (e.key === 'Enter' && input.value.trim()) finish(input.value.trim()); });
+      }
+    });
+  }
+
   function appendSkillBanner(skillId) {
     const skill = skills.find(s => s.id === skillId);
     if (!skill) return;
@@ -253,6 +296,8 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
           const { applied, hunkCount } = await editorCtrl.proposeDiff(params.content, { autoAccept });
           return applied ? `Created ${params.path}` : `Proposed new file ${params.path} (${hunkCount} hunk(s)), shown to the user for review`;
         }
+        case 'ask_user':
+          return await renderAskUserCard(params);
         default:
           return `Unknown tool: ${name}`;
       }
