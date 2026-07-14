@@ -160,6 +160,7 @@ const diffField = StateField.define({
   provide: f => [
     EditorView.decorations.from(f),
     EditorView.editable.from(f, deco => deco.size === 0),
+    EditorState.readOnly.from(f, deco => deco.size > 0),
   ],
 });
 
