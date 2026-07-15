@@ -620,6 +620,16 @@ async function sendFromHome() {
   const raw = homeInput.value.trim();
   if (!raw) return;
 
+  const pipePrefixMatch = raw.match(/^[@/](pipe|pipeline)\b\s*/i);
+  if (pipePrefixMatch) {
+    const goal = raw.slice(pipePrefixMatch[0].length).trim();
+    if (!goal) return;
+    homeInput.value = '';
+    homeInput.style.height = 'auto';
+    await launchAdHocPipeline(goal);
+    return;
+  }
+
   const brainPrefixMatch = raw.match(/^[@/]brain\b\s*/i);
   const text = brainPrefixMatch ? raw.slice(brainPrefixMatch[0].length) : raw;
 
@@ -654,6 +664,26 @@ async function sendFromHome() {
 
   homeInput.value = '';
   homeInput.style.height = 'auto';
+}
+
+// @pipe/@pipeline from Home: create a fresh dynamic pipeline snapshotting the
+// current agent roster, run it immediately, and jump to its live turn feed.
+// Each message is a one-off — rerunning/refining an existing ad hoc pipeline
+// happens from the Pipelines list like any other pipeline, not by re-sending.
+async function launchAdHocPipeline(goal) {
+  const name = goal.length > 42 ? goal.slice(0, 42) + '…' : goal;
+  const roster = agents.map(a => a.id);
+  const r = await api('POST', '/api/pipelines', { name, goal, mode: 'dynamic', roster }).catch(() => null);
+  if (!r?.id) { alert('Could not create the pipeline'); return; }
+  const pipeline = await api('GET', `/api/pipelines/${r.id}`).catch(() => null);
+  if (pipeline) {
+    pipeline.workDir = await resolveDefaultWorkDir(r.id);
+    await api('PUT', `/api/pipelines/${r.id}`, pipeline).catch(() => {});
+  }
+  await api('POST', `/api/pipelines/${r.id}/run`).catch(() => {});
+  await loadPipelines();
+  switchSection('pipelines');
+  await selectPipeline(r.id);
 }
 
 homeSendBtn.addEventListener('click', sendFromHome);
