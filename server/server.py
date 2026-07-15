@@ -192,6 +192,23 @@ def init_db():
                 started_at    TEXT,
                 finished_at   TEXT
             );
+            CREATE TABLE IF NOT EXISTS pipeline_turns (
+                id             TEXT PRIMARY KEY,
+                run_id         TEXT NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+                turn_index     INTEGER NOT NULL,
+                agent_id       TEXT,
+                agent_name     TEXT NOT NULL DEFAULT '',
+                action         TEXT NOT NULL,
+                instructions   TEXT,
+                reasoning      TEXT,
+                output         TEXT,
+                workspace_diff TEXT,
+                verify_status  TEXT,
+                superseded_by  INTEGER,
+                status         TEXT NOT NULL DEFAULT 'pending',
+                started_at     TEXT,
+                finished_at    TEXT
+            );
             CREATE TABLE IF NOT EXISTS code_sessions (
                 id          TEXT PRIMARY KEY DEFAULT 'default',
                 root_path   TEXT NOT NULL DEFAULT '',
@@ -258,6 +275,14 @@ def init_db():
             "ALTER TABLE network_hosts ADD COLUMN ssh_user TEXT NOT NULL DEFAULT 'viktor'",
             "ALTER TABLE network_hosts ADD COLUMN capacity TEXT NOT NULL DEFAULT 'full'",
             "ALTER TABLE agents ADD COLUMN fallback_model TEXT DEFAULT ''",
+            'ALTER TABLE agents ADD COLUMN role            TEXT',
+            'ALTER TABLE agents ADD COLUMN agent_goal      TEXT',
+            'ALTER TABLE agents ADD COLUMN expected_output TEXT',
+            "ALTER TABLE pipelines ADD COLUMN mode           TEXT NOT NULL DEFAULT 'fixed'",
+            "ALTER TABLE pipelines ADD COLUMN roster         TEXT NOT NULL DEFAULT '[]'",
+            'ALTER TABLE pipelines ADD COLUMN verify_command TEXT',
+            'ALTER TABLE pipelines ADD COLUMN max_turns      INTEGER NOT NULL DEFAULT 20',
+            'ALTER TABLE pipelines ADD COLUMN work_dir       TEXT',
         ]:
             try:
                 db.execute(sql)
@@ -851,10 +876,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         tools = json.dumps(body.get('tools') or {})
         with get_db() as db:
             db.execute(
-                'INSERT INTO agents (id,name,model,system_prompt,temperature,top_p,context_len,tools,fallback_model) VALUES (?,?,?,?,?,?,?,?,?)',
+                'INSERT INTO agents (id,name,model,system_prompt,temperature,top_p,context_len,tools,fallback_model,role,agent_goal,expected_output) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
                 (body['id'], body['name'], body.get('model',''), body.get('systemPrompt',''),
                  body.get('temperature',0.7), body.get('topP',0.9), body.get('contextLen',4096), tools,
-                 body.get('fallbackModel',''))
+                 body.get('fallbackModel',''), body.get('role',''), body.get('agentGoal',''),
+                 body.get('expectedOutput',''))
             )
         self._json({'ok': True})
 
@@ -862,10 +888,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         tools = json.dumps(body.get('tools') or {})
         with get_db() as db:
             db.execute(
-                'UPDATE agents SET name=?,model=?,system_prompt=?,temperature=?,top_p=?,context_len=?,tools=?,fallback_model=? WHERE id=?',
-                (body['name'], body.get('model',''), body.get('systemPrompt',''),
+                'UPDATE agents SET name=?,model=?,system_prompt=?,temperature=?,top_p=?,context_len=?,tools=?,fallback_model=?,role=?,agent_goal=?,expected_output=? WHERE id=?',
+                (body.get('name',''), body.get('model',''), body.get('systemPrompt',''),
                  body.get('temperature',0.7), body.get('topP',0.9), body.get('contextLen',4096), tools,
-                 body.get('fallbackModel',''), id)
+                 body.get('fallbackModel',''), body.get('role',''), body.get('agentGoal',''),
+                 body.get('expectedOutput',''), id)
             )
         self._json({'ok': True})
 
@@ -885,6 +912,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             'systemPrompt': row['system_prompt'], 'temperature': row['temperature'],
             'topP': row['top_p'], 'contextLen': row['context_len'],
             'tools': tools, 'fallbackModel': row['fallback_model'] or '',
+            'role': row['role'] or '', 'agentGoal': row['agent_goal'] or '',
+            'expectedOutput': row['expected_output'] or '',
         }
 
     # ── Network hosts ──────────────────────────────────────────────────────
@@ -1406,6 +1435,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             'feedbackLoop': bool(row['feedback_loop']) if 'feedback_loop' in row.keys() else True,
             'layout': json.loads(row['layout'] or '{}'),
             'createdAt': row['created_at'],
+            'mode': row['mode'] if 'mode' in row.keys() else 'fixed',
+            'roster': json.loads(row['roster'] or '[]') if 'roster' in row.keys() else [],
+            'verifyCommand': (row['verify_command'] or '') if 'verify_command' in row.keys() else '',
+            'maxTurns': row['max_turns'] if 'max_turns' in row.keys() else 20,
+            'workDir': (row['work_dir'] or '') if 'work_dir' in row.keys() else '',
         }
 
     def _pl_step_out(self, row):
@@ -1727,19 +1761,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         now = datetime.datetime.now().isoformat()
         with get_db() as db:
             db.execute(
-                'INSERT INTO pipelines (id,name,goal,pm_agent_id,pm_model,schedule,pause_on_fail,feedback_loop,layout,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                'INSERT INTO pipelines (id,name,goal,pm_agent_id,pm_model,schedule,pause_on_fail,feedback_loop,layout,created_at,mode,roster,verify_command,max_turns,work_dir) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                 (pid, body.get('name','New Pipeline'), body.get('goal',''),
                  body.get('pmAgentId'), body.get('pmModel',''),
                  json.dumps(body.get('schedule',{'type':'manual'})),
                  1 if body.get('pauseOnFail', True) else 0,
                  1 if body.get('feedbackLoop', True) else 0,
-                 json.dumps(body.get('layout',{})), now)
+                 json.dumps(body.get('layout',{})), now,
+                 body.get('mode', 'fixed'),
+                 json.dumps(body.get('roster', [])),
+                 body.get('verifyCommand', ''),
+                 body.get('maxTurns', 20),
+                 body.get('workDir', ''))
             )
-            # Default start block, so the feedback gate always has a step to loop back to
-            db.execute(
-                'INSERT INTO pipeline_steps (id,pipeline_id,step_index,name,agent_id,agent_name,task,handover_fields,quality_criteria,pass_full_output,agent_input,model_tier,loop_config) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                (str(time.time_ns()), pid, 0, 'Start', None, '', '', '[]', '[]', 0, '', 'local', '{}')
-            )
+            if body.get('mode', 'fixed') == 'fixed':
+                # Default start block, so the feedback gate always has a step to loop back to.
+                # Dynamic pipelines have no pipeline_steps at all.
+                db.execute(
+                    'INSERT INTO pipeline_steps (id,pipeline_id,step_index,name,agent_id,agent_name,task,handover_fields,quality_criteria,pass_full_output,agent_input,model_tier,loop_config) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (str(time.time_ns()), pid, 0, 'Start', None, '', '', '[]', '[]', 0, '', 'local', '{}')
+                )
         self._json({'ok': True, 'id': pid})
 
     def _get_pipeline(self, pid):
@@ -1757,13 +1798,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _put_pipeline(self, pid, body):
         with get_db() as db:
             db.execute('''UPDATE pipelines SET name=?,goal=?,pm_agent_id=?,pm_model=?,
-                          schedule=?,pause_on_fail=?,feedback_loop=?,layout=? WHERE id=?''',
+                          schedule=?,pause_on_fail=?,feedback_loop=?,layout=?,
+                          mode=?,roster=?,verify_command=?,max_turns=?,work_dir=? WHERE id=?''',
                        (body.get('name'), body.get('goal',''),
                         body.get('pmAgentId'), body.get('pmModel',''),
                         json.dumps(body.get('schedule',{'type':'manual'})),
                         1 if body.get('pauseOnFail', True) else 0,
                         1 if body.get('feedbackLoop', True) else 0,
-                        json.dumps(body.get('layout',{})), pid))
+                        json.dumps(body.get('layout',{})),
+                        body.get('mode', 'fixed'),
+                        json.dumps(body.get('roster', [])),
+                        body.get('verifyCommand', ''),
+                        body.get('maxTurns', 20),
+                        body.get('workDir', ''), pid))
         self._json({'ok': True})
 
     def _delete_pipeline(self, pid):

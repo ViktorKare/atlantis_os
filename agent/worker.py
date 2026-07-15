@@ -261,8 +261,11 @@ def http_request_core(url, method='GET', headers=None, body=None):
     except urllib.error.HTTPError as e:
         return {'status': e.code, 'body': e.read(262144).decode('utf-8', errors='replace')[:50000]}
 
-def run_command_core(command, cwd=None, timeout=60):
-    work = pipe_path_safe(cwd) if cwd else get_fs_root()
+def run_command_core(command, cwd=None, timeout=60, work_root=None):
+    if cwd:
+        work = pipe_path_safe(cwd, work_root)
+    else:
+        work = Path(work_root) if work_root else get_fs_root()
     if not work.is_dir():
         return {'error': f'cwd is not a directory: {work}'}
     try:
@@ -327,22 +330,23 @@ def browser_snapshot():
             'elements': els,
             'hint': 'Use the ref numbers with browser_click / browser_type.'}
 
-def exec_tool(name, args, allowed=None):
+def exec_tool(name, args, allowed=None, work_root=None):
     if allowed is not None and name not in allowed:
         return {'error': f'Tool not permitted for this agent: {name}'}
+    root = Path(work_root) if work_root else get_fs_root()
     try:
         if name == 'read_file':
-            p = pipe_path_safe(args.get('path', ''))
+            p = pipe_path_safe(args.get('path', ''), work_root)
             return {'content': p.read_text()}
         elif name == 'write_file':
-            p = pipe_path_safe(args.get('path', ''))
+            p = pipe_path_safe(args.get('path', ''), work_root)
             if _db_write_guard(p):
                 return {'error': 'Writing to the system database file is not allowed'}
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(args.get('content', ''))
             return {'ok': True, 'path': str(p)}
         elif name == 'edit_file':
-            p = pipe_path_safe(args.get('path', ''))
+            p = pipe_path_safe(args.get('path', ''), work_root)
             if _db_write_guard(p):
                 return {'error': 'Editing the system database file is not allowed'}
             old, new = args.get('old_string', ''), args.get('new_string', '')
@@ -357,12 +361,12 @@ def exec_tool(name, args, allowed=None):
             p.write_text(text.replace(old, new) if args.get('replace_all') else text.replace(old, new, 1))
             return {'ok': True, 'path': str(p), 'replacements': count if args.get('replace_all') else 1}
         elif name == 'list_files':
-            p = pipe_path_safe(args.get('path', str(Path.home())))
+            p = pipe_path_safe(args.get('path', str(root)), work_root)
             entries = [{'name': e.name, 'type': 'dir' if e.is_dir() else 'file'}
                        for e in sorted(p.iterdir())]
             return {'entries': entries}
         elif name == 'search_files':
-            p = pipe_path_safe(args.get('path', str(get_fs_root())))
+            p = pipe_path_safe(args.get('path', str(root)), work_root)
             pattern = args.get('pattern', '')
             if not pattern:
                 return {'error': 'pattern is required'}
@@ -379,7 +383,7 @@ def exec_tool(name, args, allowed=None):
         elif name == 'run_command':
             if not args.get('command'):
                 return {'error': 'command is required'}
-            return run_command_core(args['command'], args.get('cwd'), args.get('timeout'))
+            return run_command_core(args['command'], args.get('cwd'), args.get('timeout'), work_root)
         elif name == 'browser_navigate':
             page = _browser_page()
             page.goto(args.get('url', ''), timeout=20000, wait_until='load')
@@ -405,7 +409,7 @@ def exec_tool(name, args, allowed=None):
             return {'messages': _BROWSER['console'][-30:]}
         elif name == 'browser_screenshot':
             page = _browser_page()
-            p = pipe_path_safe(args.get('path') or str(get_fs_root() / 'screenshot.png'))
+            p = pipe_path_safe(args.get('path') or str(root / 'screenshot.png'), work_root)
             p.parent.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(p), full_page=bool(args.get('full_page')))
             return {'ok': True, 'path': str(p)}
@@ -515,6 +519,190 @@ def job_cancel_requested(job_id):
         row = db.execute('SELECT status FROM jobs WHERE id=?', (job_id,)).fetchone()
     return bool(row) and row['status'] == 'cancelling'
 
+# ── Dynamic pipeline turns ──────────────────────────────────────────────────
+
+def insert_turn(run_id, turn_index, agent_id, agent_name, action, instructions='', reasoning=''):
+    tid = str(time.time_ns())
+    with db_session() as db:
+        db.execute(
+            'INSERT INTO pipeline_turns '
+            '(id,run_id,turn_index,agent_id,agent_name,action,instructions,reasoning,status) '
+            'VALUES (?,?,?,?,?,?,?,?,?)',
+            (tid, run_id, turn_index, agent_id, agent_name, action, instructions, reasoning, 'running')
+        )
+    return tid
+
+def update_turn(run_id, turn_index, **kwargs):
+    with db_session() as db:
+        fields = ', '.join(f'{k}=?' for k in kwargs)
+        db.execute(
+            f'UPDATE pipeline_turns SET {fields} WHERE run_id=? AND turn_index=?',
+            (*kwargs.values(), run_id, turn_index)
+        )
+
+def supersede_turns_after(run_id, root_cause_index, new_turn_index):
+    with db_session() as db:
+        db.execute(
+            'UPDATE pipeline_turns SET superseded_by=? '
+            'WHERE run_id=? AND turn_index>? AND turn_index<? AND superseded_by IS NULL',
+            (new_turn_index, run_id, root_cause_index, new_turn_index)
+        )
+
+def get_live_turns(run_id):
+    with db_session() as db:
+        rows = rows_to_list(db.execute(
+            'SELECT * FROM pipeline_turns WHERE run_id=? AND superseded_by IS NULL ORDER BY turn_index',
+            (run_id,)
+        ).fetchall())
+    return rows
+
+def build_orchestrator_prompt(pipeline, roster_agents, turns, workspace_diff):
+    roster_lines = [
+        f'- id={a["id"]} name="{a["name"]}" role="{a.get("role") or "(none)"}" '
+        f'goal="{a.get("agent_goal") or "(none)"}" '
+        f'expected_output="{a.get("expected_output") or "(none)"}"'
+        for a in roster_agents
+    ]
+    roster_text = '\n'.join(roster_lines) or '(roster is empty)'
+
+    history_lines = []
+    for t in turns:
+        line = f'Turn {t["turn_index"]}: action={t["action"]} agent={t.get("agent_name","")}\n'
+        if t.get('instructions'):    line += f'  instructions: {t["instructions"]}\n'
+        if t.get('reasoning'):       line += f'  reasoning: {t["reasoning"]}\n'
+        if t.get('output'):          line += f'  output: {t["output"][:2000]}\n'
+        if t.get('workspace_diff'):  line += f'  workspace diff:\n{t["workspace_diff"]}\n'
+        if t.get('verify_status'):   line += f'  verify_status: {t["verify_status"]}\n'
+        history_lines.append(line)
+    history_text = '\n'.join(history_lines) or '(no turns yet — this is the first decision)'
+
+    return [{'role': 'user', 'content': (
+        f'You are the orchestrator for a dynamic pipeline.\n'
+        f'Goal: {pipeline["goal"]}\n\n'
+        f'Agent roster (the ONLY agents you may invoke):\n{roster_text}\n\n'
+        f'Turn history so far:\n{history_text}\n\n'
+        f'Current workspace state (uncommitted changes since the last turn):\n'
+        f'{workspace_diff or "(no changes)"}\n\n'
+        f'Decide what happens next. Respond ONLY with valid JSON (no markdown fences, no extra text):\n'
+        '{"action":"invoke","agentId":"<id from roster>","instructions":"<specific task for that agent>",'
+        '"reasoning":"<why this agent, why now>","rootCauseTurn":null}\n'
+        'or {"action":"verify","reasoning":"<why verification is needed now>"}\n'
+        'or {"action":"done","reasoning":"<why the goal is fully satisfied>"}\n'
+        'or {"action":"fail","reasoning":"<why this cannot be completed>"}\n\n'
+        'Set "rootCauseTurn" to the turn_index of an earlier turn ONLY when you have identified that turn '
+        'as the actual source of a problem (not the turn that merely surfaced it) — the corrective invoke '
+        'you specify will invalidate every turn after it. Otherwise leave it null or omit it.\n'
+        'Be strict: keep each agent scoped to its stated role/goal/expected_output — reject scope creep '
+        '(e.g. a planner writing implementation code, or a developer redesigning the plan) by routing '
+        'to the right agent instead of letting one agent do everyone\'s job.'
+    )}]
+
+def parse_orchestrator_decision(raw, roster_ids):
+    try:
+        cleaned = raw.strip().lstrip('`').removeprefix('json').strip('`').strip()
+        if not cleaned.startswith('{'):
+            start, end = cleaned.rfind('{'), cleaned.rfind('}')
+            if start != -1 and end > start:
+                cleaned = cleaned[start:end + 1]
+        decision = json.loads(cleaned)
+    except Exception:
+        return None, f'unparseable orchestrator response: {raw[:200]}'
+    action = decision.get('action')
+    if action not in ('invoke', 'verify', 'done', 'fail'):
+        return None, f'invalid action {action!r} — must be invoke, verify, done, or fail'
+    if action == 'invoke':
+        agent_id = decision.get('agentId')
+        if agent_id not in roster_ids:
+            return None, f'agentId {agent_id!r} is not in the roster; valid ids are: {sorted(roster_ids)}'
+        if not decision.get('instructions'):
+            return None, 'invoke decisions require non-empty "instructions"'
+    rc = decision.get('rootCauseTurn')
+    decision['rootCauseTurn'] = rc if isinstance(rc, int) and not isinstance(rc, bool) and rc >= 0 else None
+    decision.setdefault('reasoning', '')
+    return decision, None
+
+def ask_orchestrator(pipeline, roster_agents, turns, workspace_diff, router, cfg, base_ctx, pm_model, pm_tier):
+    roster_ids = {a['id'] for a in roster_agents}
+    msgs = build_orchestrator_prompt(pipeline, roster_agents, turns, workspace_diff)
+    for _ in range(3):
+        provider, model, cred = resolve_llm(pm_tier, msgs, router, cfg, pm_model)
+        if provider == 'anthropic':
+            raw, err = anthropic_once(cred, model, msgs)
+        else:
+            raw, err = ollama_once(cred, model, msgs, num_ctx=base_ctx)
+        if not raw:
+            msgs = msgs + [{'role': 'user', 'content':
+                            f'Your previous response failed: {err or "empty response"}. '
+                            f'Try again — respond ONLY with the JSON decision.'}]
+            continue
+        decision, val_err = parse_orchestrator_decision(raw, roster_ids)
+        if decision is not None:
+            return decision, None
+        msgs = msgs + [{'role': 'user', 'content':
+                        f'Your previous response was invalid: {val_err}. '
+                        f'Try again — respond ONLY with the JSON decision.'}]
+    return None, 'orchestrator failed to produce a valid decision after 3 attempts'
+
+def run_verification(pipeline, roster_agents, work_root, run_llm_fn, turn_index):
+    """Returns (status, output, tier). Tier 1 = real command, tier 2 = QA-role
+    agent's independent judgment, tier 3 = no ground truth available — the
+    orchestrator's own stated reasoning (already on the turn record) is the
+    only justification for 'done' in that case."""
+    verify_command = (pipeline.get('verify_command') or '').strip()
+    if verify_command:
+        result = run_command_core(verify_command, cwd=None, timeout=120, work_root=work_root)
+        if 'error' in result:
+            return 'failed', result['error'], 1
+        passed = result['exit_code'] == 0
+        output = f"exit_code={result['exit_code']}\nstdout:\n{result['stdout']}\nstderr:\n{result['stderr']}"
+        return ('passed' if passed else 'failed'), output, 1
+
+    qa_agent = next((a for a in roster_agents if any(
+        kw in (a.get('role') or '').lower() for kw in ('qa', 'review', 'test')
+    )), None)
+    if qa_agent:
+        agent_tools_cfg = json.loads(qa_agent.get('tools') or '{}')
+        agent_tools = build_tools(agent_tools_cfg)
+        msgs = [
+            {'role': 'system', 'content': qa_agent.get('system_prompt') or ''},
+            {'role': 'user', 'content': (
+                f'Pipeline goal: {pipeline["goal"]}\n'
+                f'Review the current workspace state against the goal. '
+                f'Respond ONLY with valid JSON: {{"passed": true|false, "notes": "specific findings"}}'
+            )},
+        ]
+        raw, err = run_llm_fn('auto', msgs, agent_tools, turn_index, agent_ctx=qa_agent.get('context_len') or 0)
+        if not raw:
+            return 'failed', f'QA agent unavailable: {err}', 2
+        try:
+            cleaned = raw.strip().lstrip('`').removeprefix('json').strip('`').strip()
+            if not cleaned.startswith('{'):
+                start, end = cleaned.rfind('{'), cleaned.rfind('}')
+                if start != -1 and end > start:
+                    cleaned = cleaned[start:end + 1]
+            result = json.loads(cleaned)
+        except Exception:
+            return 'failed', f'QA agent gave unparseable response: {raw[:200]}', 2
+        return ('passed' if result.get('passed') else 'failed'), result.get('notes', ''), 2
+
+    return ('passed',
+            'No verify_command configured and no QA-role agent in the roster — self-check tier: '
+            'see this turn\'s "reasoning" for why ground-truth verification does not apply here.',
+            3)
+
+def verification_satisfied(turns):
+    """True only if the most recent verify turn must exist, be the latest verify
+    attempt, and have passed, and no invoke turn has landed changes since it.
+    `turns` must be live (non-superseded), ordered by turn_index — i.e. exactly
+    what get_live_turns() returns."""
+    last_verify = None
+    for t in turns:
+        if t['action'] == 'verify':
+            last_verify = t
+    if last_verify is None or last_verify.get('verify_status') != 'passed':
+        return False
+    return not any(t['action'] == 'invoke' and t['turn_index'] > last_verify['turn_index'] for t in turns)
+
 _HW_NUM_CTX = None
 
 def detect_num_ctx(cfg):
@@ -610,7 +798,7 @@ def flush_chunks(job_id, pending):
         db.execute("UPDATE jobs SET output_log = output_log || ? WHERE id = ?", (lines, job_id))
     pending.clear()
 
-def ollama_agentic(ollama_ep, model, messages, use_tools, step_idx, job_id, num_ctx=0):
+def ollama_agentic(ollama_ep, model, messages, use_tools, step_idx, job_id, num_ctx=0, work_root=None):
     """Agentic loop: call Ollama, execute tool calls, repeat until done.
     `use_tools` is the list of tool defs this agent may use (empty/None = no tools).
     Logs step_chunk, step_thinking and tool_call events. Returns (output_text, error).
@@ -695,7 +883,7 @@ def ollama_agentic(ollama_ep, model, messages, use_tools, step_idx, job_id, num_
             if isinstance(args, str):
                 try: args = json.loads(args)
                 except Exception: args = {}
-            result = exec_tool(name, args, allowed=allowed)
+            result = exec_tool(name, args, allowed=allowed, work_root=work_root)
             log_event(job_id, {'type': 'tool_call', 'stepIndex': step_idx,
                                 'tool': name, 'result': result})
             msgs.append({'role': 'tool', 'content': json.dumps(result)})
@@ -760,7 +948,7 @@ def to_anthropic_tools(tools):
         for t in (tools or [])
     ]
 
-def anthropic_agentic(api_key, model, messages, use_tools, step_idx, job_id):
+def anthropic_agentic(api_key, model, messages, use_tools, step_idx, job_id, work_root=None):
     """Agentic loop using Anthropic /v1/messages streaming. `use_tools` is the
     list of ollama-format tool defs this agent may use. Returns (output, error)."""
     if not api_key:
@@ -858,7 +1046,7 @@ def anthropic_agentic(api_key, model, messages, use_tools, step_idx, job_id):
         ant_msgs.append({'role': 'assistant', 'content': ant_content})
         tool_results = []
         for tu in tool_uses:
-            result = exec_tool(tu['name'], tu['input'], allowed=allowed)
+            result = exec_tool(tu['name'], tu['input'], allowed=allowed, work_root=work_root)
             log_event(job_id, {'type': 'tool_call', 'stepIndex': step_idx,
                                 'tool': tu['name'], 'result': result})
             tool_results.append({'type': 'tool_result', 'tool_use_id': tu['id'],
@@ -937,6 +1125,10 @@ def execute_job(job):
                 pm_model = pm_agent.get('model', '')
         if not pm_model:
             pm_model = next((a['model'] for a in all_agents if a.get('model')), 'llama3.1:8b')
+
+        if pipeline.get('mode') == 'dynamic':
+            execute_dynamic_job(job, pipeline, all_agents, cfg, router, base_ctx, pm_model, pm_tier)
+            return
 
         def parse_step(s):
             return {
@@ -1054,10 +1246,10 @@ def execute_job(job):
         def run_llm(tier, msgs, use_tools, step_idx, agent_ctx=0):
             provider, model, cred = resolve_llm(tier, msgs, router, cfg, pm_model)
             if provider == 'anthropic':
-                return anthropic_agentic(cred, model, msgs, use_tools, step_idx, job_id)
+                return anthropic_agentic(cred, model, msgs, use_tools, step_idx, job_id, work_root=work_root)
             # Hardware floor, but an agent configured higher gets what it asked for
             return ollama_agentic(cred, model, msgs, use_tools, step_idx, job_id,
-                                  num_ctx=max(base_ctx, agent_ctx or 0))
+                                  num_ctx=max(base_ctx, agent_ctx or 0), work_root=work_root)
 
         def run_pm(msgs):
             provider, model, cred = resolve_llm(pm_tier, msgs, router, cfg, pm_model)
@@ -1123,7 +1315,7 @@ def execute_job(job):
                 log_event(job_id, {'type': 'feedback_triage',
                                    'targets': sorted(fb_targets), 'reused': sorted(fb_skip)})
 
-        work_root  = str(get_fs_root())
+        work_root  = str(pipeline.get('work_dir') or get_fs_root())
 
         def step_uses_fs(s):
             a = next((x for x in all_agents if x['id'] == s.get('agentId')), None)
@@ -1564,6 +1756,175 @@ def execute_job(job):
             set_run_status('done')
         log_event(job_id, {'type': 'run_done', 'runId': run_id})
         finish_job(job_id, 'done')
+
+    except Exception as e:
+        try: log_event(job_id, {'type': 'error', 'message': str(e)})
+        except Exception: pass
+        try: finish_job(job_id, 'failed', str(e))
+        except Exception: pass
+        try: set_run_status('failed', error=str(e))
+        except Exception: pass
+
+def execute_dynamic_job(job, pipeline, all_agents, cfg, router, base_ctx, pm_model, pm_tier):
+    job_id = job['id']
+    pid = pipeline['id']
+    roster_ids = json.loads(pipeline.get('roster') or '[]')
+    roster_agents = [a for a in all_agents if a['id'] in roster_ids]
+    if not roster_agents:
+        log_event(job_id, {'type': 'error', 'message': 'Dynamic pipeline has no agents in its roster'})
+        finish_job(job_id, 'failed', 'Empty roster')
+        return
+
+    try:
+        work_root = pipeline.get('work_dir') or str(get_fs_root())
+        Path(work_root).mkdir(parents=True, exist_ok=True)
+        git_ok = git_workspace_ready(work_root)
+
+        run_id = str(time.time_ns())
+        with db_session() as db:
+            db.execute(
+                'INSERT INTO pipeline_runs (id,pipeline_id,status,started_at) VALUES (?,?,?,?)',
+                (run_id, pid, 'running', datetime.datetime.now().isoformat())
+            )
+        log_event(job_id, {'type': 'run_start', 'runId': run_id, 'mode': 'dynamic'})
+
+        def run_llm(tier, msgs, use_tools, turn_idx, agent_ctx=0):
+            provider, model, cred = resolve_llm(tier, msgs, router, cfg, pm_model)
+            if provider == 'anthropic':
+                return anthropic_agentic(cred, model, msgs, use_tools, turn_idx, job_id, work_root=work_root)
+            return ollama_agentic(cred, model, msgs, use_tools, turn_idx, job_id,
+                                  num_ctx=max(base_ctx, agent_ctx or 0), work_root=work_root)
+
+        def set_run_status(status, error=None):
+            with db_session() as db:
+                db.execute('UPDATE pipeline_runs SET status=?,finished_at=?,error=? WHERE id=?',
+                           (status, datetime.datetime.now().isoformat(), error, run_id))
+
+        max_turns = pipeline.get('max_turns') or 20
+        last_invoke_hash, last_invoke_agent = None, None
+        turn_index = 0
+
+        while turn_index < max_turns:
+            if job_cancel_requested(job_id):
+                set_run_status('cancelled')
+                log_event(job_id, {'type': 'run_cancelled', 'reason': 'Cancelled by user'})
+                finish_job(job_id, 'cancelled')
+                return
+
+            workspace_diff = git_churn_stat(work_root) if git_ok else ''
+            live_turns = get_live_turns(run_id)
+            decision, err = ask_orchestrator(pipeline, roster_agents, live_turns, workspace_diff,
+                                             router, cfg, base_ctx, pm_model, pm_tier)
+            if err:
+                set_run_status('failed', error=err)
+                log_event(job_id, {'type': 'run_failed', 'reason': err})
+                finish_job(job_id, 'failed', err)
+                return
+
+            if decision.get('rootCauseTurn') is not None:
+                root_idx = decision['rootCauseTurn']
+                supersede_turns_after(run_id, root_idx, turn_index)
+                log_event(job_id, {'type': 'turn_superseded', 'rootCauseTurn': root_idx, 'byTurn': turn_index})
+                live_turns = get_live_turns(run_id)
+
+            action = decision['action']
+
+            if action == 'done':
+                if verification_satisfied(live_turns):
+                    set_run_status('done')
+                    log_event(job_id, {'type': 'run_done', 'runId': run_id})
+                    finish_job(job_id, 'done')
+                    return
+                decision = {'action': 'verify', 'reasoning':
+                           'Forced: cannot finish without a passing verification since the last change.',
+                           'rootCauseTurn': None}
+                action = 'verify'
+                log_event(job_id, {'type': 'verification_override', 'turnIndex': turn_index})
+
+            agent = None
+            if action == 'invoke':
+                agent = next((a for a in roster_agents if a['id'] == decision.get('agentId')), None)
+
+            insert_turn(run_id, turn_index, agent['id'] if agent else None,
+                       agent['name'] if agent else '', action,
+                       decision.get('instructions', ''), decision.get('reasoning', ''))
+            log_event(job_id, {'type': 'turn_start', 'turnIndex': turn_index, 'action': action,
+                               'agentName': agent['name'] if agent else '',
+                               'reasoning': decision.get('reasoning', '')})
+
+            if action == 'fail':
+                update_turn(run_id, turn_index, status='done', finished_at=datetime.datetime.now().isoformat())
+                reason = decision.get('reasoning', 'Orchestrator gave up')
+                set_run_status('failed', error=reason)
+                log_event(job_id, {'type': 'run_failed', 'reason': reason})
+                finish_job(job_id, 'failed', reason)
+                return
+
+            elif action == 'invoke':
+                sys_parts = []
+                if agent.get('system_prompt'):
+                    sys_parts.append(agent['system_prompt'])
+                sys_parts.append(
+                    f'Your role: {agent.get("role") or "(unspecified)"}\n'
+                    f'Your goal: {agent.get("agent_goal") or "(unspecified)"}\n'
+                    f'Expected output shape: {agent.get("expected_output") or "(unspecified)"}\n'
+                    f"Stay inside this role — do not do another agent's job."
+                )
+                sys_parts.append(f'Pipeline goal: {pipeline["goal"]}')
+                agent_tools_cfg = json.loads(agent.get('tools') or '{}')
+                agent_tools = build_tools(agent_tools_cfg)
+                if agent_tools and (agent_tools_cfg.get('files') or agent_tools_cfg.get('shell')):
+                    sys_parts.append(f'WORKSPACE ROOT: {work_root} — every file path MUST start with this prefix.')
+
+                user_parts = [f'Your task this turn: {decision.get("instructions", "")}']
+                if workspace_diff:
+                    user_parts.append(f'\nCurrent workspace changes (uncommitted, real state — not a summary):\n{workspace_diff}')
+
+                messages = [{'role': 'system', 'content': '\n\n'.join(sys_parts)},
+                           {'role': 'user', 'content': '\n'.join(user_parts)}]
+
+                if git_ok:
+                    git_snapshot(work_root, f'pre-turn {turn_index}')
+                output, agent_err = run_llm('auto', messages, agent_tools, turn_index,
+                                            agent_ctx=agent.get('context_len') or 0)
+
+                if agent_err == 'cancelled' or (agent_err and job_cancel_requested(job_id)):
+                    set_run_status('cancelled')
+                    log_event(job_id, {'type': 'run_cancelled', 'reason': 'Cancelled by user'})
+                    finish_job(job_id, 'cancelled')
+                    return
+
+                diff_after = git_churn_stat(work_root) if git_ok else ''
+                if agent_err:
+                    update_turn(run_id, turn_index, status='failed', output=agent_err,
+                               workspace_diff=diff_after, finished_at=datetime.datetime.now().isoformat())
+                    log_event(job_id, {'type': 'turn_done', 'turnIndex': turn_index,
+                                       'status': 'failed', 'error': agent_err})
+                else:
+                    update_turn(run_id, turn_index, status='done', output=output,
+                               workspace_diff=diff_after, finished_at=datetime.datetime.now().isoformat())
+                    log_event(job_id, {'type': 'turn_done', 'turnIndex': turn_index, 'status': 'done'})
+
+                    stall_hash = hashlib.sha256(f'{agent["id"]}:{output}'.encode()).hexdigest()
+                    if last_invoke_agent == agent['id'] and last_invoke_hash == stall_hash:
+                        set_run_status('failed', error='stalled')
+                        log_event(job_id, {'type': 'run_failed', 'reason': 'stalled'})
+                        finish_job(job_id, 'failed', 'stalled')
+                        return
+                    last_invoke_hash, last_invoke_agent = stall_hash, agent['id']
+
+            elif action == 'verify':
+                status, output, tier = run_verification(pipeline, roster_agents, work_root, run_llm, turn_index)
+                update_turn(run_id, turn_index, status='done', output=output, verify_status=status,
+                           finished_at=datetime.datetime.now().isoformat())
+                log_event(job_id, {'type': 'verification_result', 'turnIndex': turn_index,
+                                   'status': status, 'tier': tier})
+
+            turn_index += 1
+
+        set_run_status('failed', error='max_turns')
+        log_event(job_id, {'type': 'run_failed', 'reason': 'max_turns'})
+        finish_job(job_id, 'failed', 'max_turns exceeded')
 
     except Exception as e:
         try: log_event(job_id, {'type': 'error', 'message': str(e)})
