@@ -2503,6 +2503,7 @@ let pipeRunning  = false;
 let pipeActiveJobId = null;      // job id of the in-flight run (for cancel)
 let pipeRunAbort = null;
 let pipeRunData  = null;         // stepIndex → step-run object
+let pipeTurnData = null;         // turnIndex → turn object (dynamic-mode pipelines only)
 let pipeDetailId = null;
 let pipeViewMode = 'edit';       // 'edit' | 'run'
 let pipeRunBarInterval = null;
@@ -2627,7 +2628,7 @@ function setPipeViewMode(mode) {
   document.getElementById('pipe-mode-run')?.classList.toggle('active', mode === 'run');
   const addBtn = document.getElementById('pipe-add-step-btn');
   const setBtn = document.getElementById('pipe-settings-btn');
-  if (addBtn && activePipe) addBtn.disabled = mode === 'run' || pipeRunning;
+  if (addBtn && activePipe) addBtn.disabled = mode === 'run' || pipeRunning || activePipe.mode === 'dynamic';
   if (setBtn && activePipe) setBtn.disabled = mode === 'run';
   renderPipeCanvas();
   if (!pipeRunning) showViewedRunBar();
@@ -2878,6 +2879,16 @@ function clearPipeCanvas() {
 // ── Nodes ─────────────────────────────────────────────────────────────────────
 
 function renderPipeCanvas() {
+  const isDynamic = activePipe?.mode === 'dynamic';
+  document.getElementById('pipe-canvas-wrap')?.classList.toggle('hidden', isDynamic);
+  document.getElementById('pipe-roster-view')?.classList.toggle('hidden', !isDynamic || pipeViewMode !== 'edit');
+  document.getElementById('pipe-turn-feed')?.classList.toggle('hidden', !isDynamic || pipeViewMode !== 'run');
+  if (isDynamic) {
+    clearPipeCanvas();
+    if (pipeViewMode === 'edit') renderPipeRosterView(); else renderTurnFeed();
+    return;
+  }
+  document.getElementById('pipe-canvas-wrap')?.classList.remove('hidden');
   clearPipeCanvas();
   if (!activePipe) return;
   const layout = activePipe.layout || {};
@@ -2916,6 +2927,85 @@ function renderPipeCanvas() {
   }
 
   drawArrows();
+}
+
+// ── Dynamic pipeline views ───────────────────────────────────────────────────
+
+function renderPipeRosterView() {
+  const el = document.getElementById('pipe-roster-view');
+  if (!el || !activePipe) return;
+  const roster = (activePipe.roster || []).map(id => agents.find(a => a.id === id)).filter(Boolean);
+  el.innerHTML = roster.length ? `
+    <div class="pipe-empty-hint">Dynamic pipeline — an orchestrator decides which roster agent acts each turn. Edit the roster and goal in ⚙ Pipeline settings.</div>
+    <div class="roster-cards">${roster.map(a => `
+      <div class="roster-card">
+        <div class="roster-card-name">${escHtml(a.name)}</div>
+        <div class="roster-card-role">${escHtml(a.role || '(no role set)')}</div>
+        ${a.agentGoal ? `<div class="roster-card-goal">${escHtml(a.agentGoal)}</div>` : ''}
+      </div>`).join('')}</div>`
+    : '<div class="pipe-empty-hint">No agents in the roster yet. Open ⚙ Pipeline settings to add some.</div>';
+}
+
+function turnCardId(i) { return `turn-card-${i}`; }
+
+function buildTurnCardHtml(t) {
+  const actionIcon = { invoke: '▶', verify: '◈', done: '✓', fail: '✗' }[t.action] || '•';
+  const verifyBadge = t.verifyStatus
+    ? `<span class="status-pill status-pill-${t.verifyStatus === 'passed' ? 'pass' : 'failed'}">${escHtml(t.verifyStatus)}${t.tier ? ` · tier ${t.tier}` : ''}</span>` : '';
+  const runningBadge = t.status === 'running' ? '<span class="status-pill status-pill-running">running</span>' : '';
+  return `
+    <div class="turn-card-hdr">
+      <span class="turn-card-idx">#${t.turnIndex + 1}</span>
+      <span class="turn-card-action">${actionIcon} ${escHtml(t.action)}</span>
+      ${t.agentName ? `<span class="turn-card-agent">${escHtml(t.agentName)}</span>` : ''}
+      ${verifyBadge}${runningBadge}
+    </div>
+    ${t.reasoning ? `<div class="turn-card-reasoning">${escHtml(t.reasoning)}</div>` : ''}
+    ${t.instructions ? `<div class="turn-card-instructions"><span class="turn-card-label">Instructions</span>${escHtml(t.instructions)}</div>` : ''}
+    <div class="turn-card-output" id="turn-out-${t.turnIndex}">${t.output ? marked.parse(t.output) : ''}</div>
+    ${t.workspaceDiff ? `<div class="turn-card-diff-wrap"><span class="turn-card-label">Workspace diff</span><pre class="turn-card-diff">${escHtml(t.workspaceDiff)}</pre></div>` : ''}
+  `;
+}
+
+function renderTurnFeed() {
+  const el = document.getElementById('pipe-turn-feed');
+  if (!el) return;
+  const live = (pipeTurnData || []).filter(Boolean);
+  el.innerHTML = live.length
+    ? live.map(t => `<div class="turn-card action-${t.action}${t.superseded ? ' superseded' : ''}" id="${turnCardId(t.turnIndex)}">${buildTurnCardHtml(t)}</div>`).join('')
+    : '<div class="pipe-empty-hint">No turns yet. Click ▶ Run to start.</div>';
+  logAutoScroll('pipe-turn-feed');
+}
+
+function appendTurnCard(t) {
+  const feed = document.getElementById('pipe-turn-feed');
+  if (!feed) return;
+  feed.querySelector('.pipe-empty-hint')?.remove();
+  const div = document.createElement('div');
+  div.className = `turn-card action-${t.action}`;
+  div.id = turnCardId(t.turnIndex);
+  div.innerHTML = buildTurnCardHtml(t);
+  feed.appendChild(div);
+  logAutoScroll('pipe-turn-feed');
+}
+
+function updateTurnCard(turnIndex) {
+  const t = pipeTurnData?.[turnIndex];
+  const card = document.getElementById(turnCardId(turnIndex));
+  if (!t || !card) return;
+  card.className = `turn-card action-${t.action}${t.superseded ? ' superseded' : ''}`;
+  card.innerHTML = buildTurnCardHtml(t);
+}
+
+function appendTurnFeedNote(text) {
+  const feed = document.getElementById('pipe-turn-feed');
+  if (!feed) return;
+  feed.querySelector('.pipe-empty-hint')?.remove();
+  const div = document.createElement('div');
+  div.className = 'turn-feed-note';
+  div.textContent = text;
+  feed.appendChild(div);
+  logAutoScroll('pipe-turn-feed');
 }
 
 function statusLabel(status) {
@@ -3679,12 +3769,12 @@ async function runPipeline() {
     stepIndex: s.stepIndex, status: 'pending', output: '', handoverData: null, pmNotes: null,
     qaVerdict: null, qaReason: null, retryCount: 0,
   }));
+  pipeTurnData = [];
   const runBtn = document.getElementById('pipe-run-btn');
   runBtn.textContent = '◼ Stop'; runBtn.title = 'Stop run';
   setPipeViewMode('run');
   showRunBar();
-  showThinkPanel();
-  appendThinkEntry('think-run-start', '▶ Run started');
+  if (activePipe.mode !== 'dynamic') { showThinkPanel(); appendThinkEntry('think-run-start', '▶ Run started'); }
   updateRunBar(0, activePipe.steps?.[0]?.name, 'starting');
 
   pipeRunAbort = new AbortController();
@@ -3739,12 +3829,12 @@ async function maybeReconnectRunningJob(active) {
     stepIndex: s.stepIndex, status: 'pending', output: '', handoverData: null,
     pmNotes: null, qaVerdict: null, qaReason: null, retryCount: 0,
   }));
+  pipeTurnData = [];
   const runBtn = document.getElementById('pipe-run-btn');
   runBtn.textContent = '◼ Stop'; runBtn.title = 'Stop run';
   setPipeViewMode('run');
   showRunBar();
-  showThinkPanel();
-  appendThinkEntry('think-run-start', '▶ Reconnected to running job');
+  if (activePipe.mode !== 'dynamic') { showThinkPanel(); appendThinkEntry('think-run-start', '▶ Reconnected to running job'); }
   updateRunBar(0, activePipe.steps?.[0]?.name, active.status === 'queued' ? 'waiting' : 'starting');
 
   pipeActiveJobId = active.id;
@@ -3804,8 +3894,43 @@ function handlePipeEvent(evt) {
     case 'run_start':
       pipeCurrentRunId = evt.runId;
       pipeViewedRunId  = evt.runId;
+      if (evt.mode === 'dynamic') { pipeTurnData = []; renderTurnFeed(); }
       refreshPipeRuns();
       break;
+    case 'turn_start': {
+      const turn = {
+        turnIndex: evt.turnIndex, action: evt.action, agentName: evt.agentName || '',
+        reasoning: evt.reasoning || '', instructions: evt.instructions || '',
+        output: '', workspaceDiff: '', verifyStatus: null, tier: null,
+        status: 'running', superseded: false,
+      };
+      pipeTurnData = pipeTurnData || [];
+      pipeTurnData[evt.turnIndex] = turn;
+      appendTurnCard(turn);
+      break;
+    }
+    case 'turn_done': {
+      const t = pipeTurnData?.[evt.turnIndex];
+      if (t) { t.status = evt.status; if (evt.error) t.output = (t.output || '') + `\n[error: ${evt.error}]`; }
+      updateTurnCard(evt.turnIndex);
+      break;
+    }
+    case 'verification_result': {
+      const t = pipeTurnData?.[evt.turnIndex];
+      if (t) { t.verifyStatus = evt.status; t.tier = evt.tier; t.status = 'done'; }
+      updateTurnCard(evt.turnIndex);
+      break;
+    }
+    case 'verification_override':
+      appendTurnFeedNote('⚠ Orchestrator said done, but verification was not satisfied — forcing a verify turn');
+      break;
+    case 'turn_superseded': {
+      (pipeTurnData || []).forEach(t => {
+        if (t && t.turnIndex > evt.rootCauseTurn) { t.superseded = true; updateTurnCard(t.turnIndex); }
+      });
+      appendTurnFeedNote(`↺ Turn ${evt.rootCauseTurn + 1} identified as root cause — turns after it are superseded, correcting now`);
+      break;
+    }
     case 'feedback_run_start':
       appendThinkEntry('think-entry think-loop',
         `⟲ Revision ${evt.revision || ''} — user feedback: ${escHtml(evt.feedback || '')}`);
@@ -3890,6 +4015,15 @@ function handlePipeEvent(evt) {
       break;
     }
     case 'step_chunk': {
+      if (activePipe?.mode === 'dynamic') {
+        const t = pipeTurnData?.[evt.stepIndex];
+        if (t) {
+          t.output = (t.output || '') + evt.chunk;
+          const el = document.getElementById(`turn-out-${evt.stepIndex}`);
+          if (el) scheduleMdRender(`turnOut${evt.stepIndex}`, el, t.output, 'pipe-turn-feed');
+        }
+        break;
+      }
       const sr = pipeRunData?.find(r => r.stepIndex === evt.stepIndex);
       if (sr) sr.output = (sr.output || '') + evt.chunk;
       const el = document.getElementById(`run-out-${evt.stepIndex}`);
@@ -3904,6 +4038,15 @@ function handlePipeEvent(evt) {
       break;
     }
     case 'tool_call': {
+      if (activePipe?.mode === 'dynamic') {
+        const t = pipeTurnData?.[evt.stepIndex];
+        if (t) {
+          t.output = (t.output || '') + `\n[tool: ${evt.tool} → ${JSON.stringify(evt.result).slice(0, 120)}]\n`;
+          const el = document.getElementById(`turn-out-${evt.stepIndex}`);
+          if (el) el.innerHTML = marked.parse(t.output);
+        }
+        break;
+      }
       const sr = pipeRunData?.find(r => r.stepIndex === evt.stepIndex);
       if (sr) sr.output = (sr.output || '') + `\n[tool: ${evt.tool} → ${JSON.stringify(evt.result).slice(0, 120)}]\n`;
       const el = document.getElementById(`run-out-${evt.stepIndex}`);
@@ -3983,6 +4126,7 @@ function handlePipeEvent(evt) {
     }
     case 'run_cancelled':
       appendThinkEntry('think-entry think-run-fail', '✕ Run cancelled');
+      if (activePipe?.mode === 'dynamic') appendTurnFeedNote('✕ Run cancelled');
       break;
     // Legacy events — kept so old job logs still replay
     case 'loop_spawned': {
@@ -4004,9 +4148,11 @@ function handlePipeEvent(evt) {
     case 'error':
       if (evt.reason || evt.message) console.warn('Pipeline:', evt.reason || evt.message);
       appendThinkEntry('think-run-fail', `✗ ${escHtml(evt.reason || evt.message || 'Failed')}`);
+      if (activePipe?.mode === 'dynamic') appendTurnFeedNote(`✗ ${evt.reason || evt.message || 'Failed'}`);
       break;
     case 'run_done':
       appendThinkEntry('think-run-done', '✓ Run complete');
+      if (activePipe?.mode === 'dynamic') appendTurnFeedNote('✓ Run complete');
       break;
   }
 }

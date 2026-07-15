@@ -1850,7 +1850,8 @@ def execute_dynamic_job(job, pipeline, all_agents, cfg, router, base_ctx, pm_mod
                        decision.get('instructions', ''), decision.get('reasoning', ''))
             log_event(job_id, {'type': 'turn_start', 'turnIndex': turn_index, 'action': action,
                                'agentName': agent['name'] if agent else '',
-                               'reasoning': decision.get('reasoning', '')})
+                               'reasoning': decision.get('reasoning', ''),
+                               'instructions': decision.get('instructions', '')})
 
             if action == 'fail':
                 update_turn(run_id, turn_index, status='done', finished_at=datetime.datetime.now().isoformat())
