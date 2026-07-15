@@ -3977,3 +3977,22 @@ button:not(:disabled):active {
   color: var(--text-dim);
   line-height: 1.5;
 }
+
+/* ── Editor disclosures (agent role, pipeline advanced fields) ────── */
+.editor-details {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-top: 10px;
+  padding: 0 12px;
+}
+.editor-details summary {
+  padding: 8px 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.editor-details summary::-webkit-details-marker { display: none; }
+.editor-details[open] summary { border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+.editor-details .editor-field:last-child { padding-bottom: 12px; }

@@ -319,7 +319,7 @@ async function loadAgents() {
 }
 
 async function createAgent() {
-  const agent = { id: uid(), name: 'New agent', model: state.model || '', fallbackModel: '', systemPrompt: '', temperature: 0.7, topP: 0.9, contextLen: 4096, tools: { files: false, web: false, shell: false, browser: false } };
+  const agent = { id: uid(), name: 'New agent', model: state.model || '', fallbackModel: '', systemPrompt: '', temperature: 0.7, topP: 0.9, contextLen: 4096, tools: { files: false, web: false, shell: false, browser: false }, role: '', agentGoal: '', expectedOutput: '' };
   agents.unshift(agent);
   activeAgentId = agent.id;
   await api('POST', '/api/agents', agent).catch(() => {});
@@ -354,6 +354,9 @@ function saveAgentFromForm(id) {
     shell:   document.getElementById('agent-tool-shell').checked,
     browser: document.getElementById('agent-tool-browser').checked,
   };
+  agent.role          = document.getElementById('agent-role').value.trim();
+  agent.agentGoal      = document.getElementById('agent-goal').value;
+  agent.expectedOutput = document.getElementById('agent-expected-output').value;
   api('PUT', `/api/agents/${id}`, agent).catch(() => {});
   refreshAgentDropdown();
   renderAgentList();
@@ -484,6 +487,21 @@ function renderAgentEditor(agent) {
         </div>
         <div class="editor-hint">Sent as Ollama <code>tools</code> array — model can call these directly without action blocks. Works with llama3.1, qwen2.5, mistral-nemo, etc. Shell runs real bash commands; Browser drives headless Chromium — grant with care.</div>
       </div>
+      <details class="editor-details">
+        <summary>Dynamic pipeline role <span class="label-hint">(only used when this agent is added to a dynamic pipeline's roster)</span></summary>
+        <div class="editor-field">
+          <label>Role</label>
+          <input type="text" id="agent-role" value="${escHtml(agent.role || '')}" placeholder="e.g. planner, developer, QA reviewer">
+        </div>
+        <div class="editor-field">
+          <label>Goal</label>
+          <textarea id="agent-goal" rows="2" placeholder="What this agent is responsible for, kept narrow so the orchestrator can enforce scope">${escHtml(agent.agentGoal || '')}</textarea>
+        </div>
+        <div class="editor-field">
+          <label>Expected output</label>
+          <textarea id="agent-expected-output" rows="2" placeholder="The shape of what this agent should hand back, e.g. a numbered task list">${escHtml(agent.expectedOutput || '')}</textarea>
+        </div>
+      </details>
       <div class="editor-actions">
         <button id="delete-agent-btn" class="btn-danger">Delete</button>
         <button id="save-agent-btn" class="btn-primary">Save agent</button>
