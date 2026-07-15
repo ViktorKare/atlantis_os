@@ -2648,7 +2648,10 @@ async function enterRunView(opts = {}) {
   if (!runs.length && opts.fallbackToEdit) { renderPipeRunList(); return; }
   if (runs.length) {
     pipeViewedRunId = runs[0].id;
-    try { applyRunStepData(await api('GET', `/api/pipeline-runs/${runs[0].id}`)); } catch (_) {}
+    try {
+      const run = await api('GET', `/api/pipeline-runs/${runs[0].id}`);
+      if (activePipe.mode === 'dynamic') applyRunTurnData(run); else applyRunStepData(run);
+    } catch (_) {}
   }
   renderPipeRunList();
   setPipeViewMode('run');
@@ -2663,6 +2666,13 @@ function applyRunStepData(run) {
     if (!latest[sr.stepIndex] || it >= (latest[sr.stepIndex].iteration || 0)) latest[sr.stepIndex] = sr;
   });
   pipeRunData = Object.values(latest);
+}
+
+function applyRunTurnData(run) {
+  pipeTurnData = [];
+  (run.turns || []).forEach(t => {
+    pipeTurnData[t.turnIndex] = { ...t, superseded: t.supersededBy != null };
+  });
 }
 
 // ── Sidebar run history ───────────────────────────────────────────────────────
@@ -4161,9 +4171,17 @@ function handlePipeEvent(evt) {
 
 async function loadRunReplay(runId) {
   const run = await api('GET', `/api/pipeline-runs/${runId}`);
+  pipeViewedRunId = runId;
+  if (activePipe?.mode === 'dynamic') {
+    applyRunTurnData(run);
+    pipeDetailId = null;
+    closePipeDetail();
+    setPipeViewMode('run');
+    renderPipeRunList();
+    return;
+  }
   const stepRuns = run.stepRuns || [];
   applyRunStepData(run);
-  pipeViewedRunId = runId;
   pipeDetailId = 'replay';
   setPipeViewMode('run');
   renderPipeRunList();
