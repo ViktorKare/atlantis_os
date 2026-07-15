@@ -1478,6 +1478,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             'parentRunId': row['parent_run_id'] if 'parent_run_id' in row.keys() else None,
         }
 
+    def _pl_turn_out(self, row):
+        return {
+            'id': row['id'], 'turnIndex': row['turn_index'],
+            'agentId': row['agent_id'], 'agentName': row['agent_name'] or '',
+            'action': row['action'], 'instructions': row['instructions'] or '',
+            'reasoning': row['reasoning'] or '', 'output': row['output'] or '',
+            'workspaceDiff': row['workspace_diff'] or '',
+            'verifyStatus': row['verify_status'],
+            'supersededBy': row['superseded_by'],
+            'status': row['status'],
+            'startedAt': row['started_at'], 'finishedAt': row['finished_at'],
+        }
+
     def _get_recent_pipeline_runs(self):
         with get_db() as db:
             rows = rows_to_list(db.execute('''
@@ -1886,8 +1899,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             step_runs = rows_to_list(db.execute(
                 'SELECT * FROM pipeline_step_runs WHERE run_id=? ORDER BY iteration, step_index', (run_id,)
             ).fetchall())
+            turns = rows_to_list(db.execute(
+                'SELECT * FROM pipeline_turns WHERE run_id=? ORDER BY turn_index', (run_id,)
+            ).fetchall())
         out = self._pl_run_out(row)
         out['stepRuns'] = [self._pl_step_run_out(s) for s in step_runs]
+        out['turns'] = [self._pl_turn_out(t) for t in turns]
         self._json(out)
 
     def _delete_pipeline_run(self, run_id):
