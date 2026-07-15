@@ -354,6 +354,21 @@ POST /api/system/stop       no body → {ok: true}
     passing output. Run detail groups step runs by iteration.
   - Cancel: ◼ Stop button POSTs /api/jobs/:id/cancel; worker checks between
     steps and flips the run to cancelled
+  - Dynamic mode (`pipelines.mode='dynamic'`): pipeline settings replace the
+    step canvas with a roster picker (multi-select over agents, each showing
+    its `role`), optional `verify_command`, `max_turns` (advanced disclosure),
+    and `work_dir` (auto-fills to `<root_path>/pipelines/<id>/` on save if left
+    blank). Edit view shows a roster card list instead of the step canvas; run
+    view shows a turn feed instead of step nodes — each turn card shows the
+    invoked agent, the orchestrator's reasoning, the instructions given, live
+    output, workspace diff, and verify pass/fail with its tier (1 = real
+    command, 2 = QA-role agent, 3 = self-check). Superseded (rewound) turns
+    render dimmed/struck-through rather than disappearing. `agents` gain
+    `role`/`agent_goal`/`expected_output` fields (Agents tab, under a "Dynamic
+    pipeline role" disclosure) used only when that agent is in a dynamic
+    roster. `@pipe`/`@pipeline` on Home (mirrors `@brain`) creates a one-off
+    dynamic pipeline from the typed goal, snapshotting the current agent
+    roster, runs it immediately, and opens its live turn feed.
 
   **Code**
   - Two backends behind a mode toggle (`#code-mode-bar`): **Editor** (default)
@@ -528,14 +543,17 @@ POST /api/system/stop       no body → {ok: true}
 
   settings          key / value (JSON-encoded)
   agents            id, name, model, system_prompt, temperature, top_p, context_len,
-                    file_access, web_access, tools (JSON)
+                    file_access, web_access, tools (JSON), fallback_model,
+                    role, agent_goal, expected_output (dynamic-pipeline-only, nullable)
   threads           id, name, model, agent_id, system_prompt, updated_at, tools
   messages          id, thread_id, role, content, thinking, tokens, eval_duration, created_at
   tasks             id, name, model, agent_id, prompt_template, schedule (JSON), created_at
   task_runs         id, task_id, started_at, finished_at, output, tokens, error
 
   pipelines         id, name, goal, pm_agent_id, pm_model, schedule, pause_on_fail,
-                    layout (JSON), created_at
+                    feedback_loop, layout (JSON), created_at,
+                    mode ('fixed'|'dynamic', default 'fixed'), roster (JSON agent-id array),
+                    verify_command, max_turns (default 20), work_dir
   pipeline_steps    id, pipeline_id, step_index, name, agent_id, agent_name, task,
                     handover_fields (JSON), quality_criteria (JSON), pass_full_output,
                     agent_input, model_tier, loop_config (JSON)
@@ -543,6 +561,13 @@ POST /api/system/stop       no body → {ok: true}
   pipeline_step_runs id, run_id, step_id, step_index, step_name, agent_name, status,
                     output, handover_data, pm_notes, qa_verdict, qa_reason,
                     retry_count, started_at, finished_at, iteration
+
+  pipeline_turns    id, run_id, turn_index, agent_id, agent_name,
+                    action ('invoke'|'verify'|'done'|'fail'), instructions, reasoning,
+                    output, workspace_diff, verify_status ('passed'|'failed'),
+                    superseded_by (turn_index of the rewind that invalidated this turn),
+                    status, started_at, finished_at
+                    — the dynamic-mode analog of pipeline_step_runs; unused when mode='fixed'
 
   jobs              id, pipeline_id, status, output_log (NDJSON event stream),
                     error, parent_job_id (legacy), loop_depth (legacy),
@@ -734,6 +759,12 @@ POST /api/system/stop       no body → {ok: true}
   loop_iteration {stepIndex, iteration, maxIterations, score, feedback}
   loop_done      {stepIndex, iteration, reason, score}
                  reason ∈ evaluator_done|sentinel|max_iterations|stalled|budget
+  turn_start             {turnIndex, action, agentName, reasoning, instructions}
+  turn_done              {turnIndex, status, error?}
+  verification_result    {turnIndex, status, tier}
+  verification_override  {turnIndex}    — orchestrator said done but the code-enforced gate forced a verify instead
+  turn_superseded        {rootCauseTurn, byTurn}
+                         (dynamic-mode only; run_start additionally carries {mode:'dynamic'} instead of {totalSteps})
   error          {message}
 
   Legacy (no longer emitted, UI still replays them from old logs):
