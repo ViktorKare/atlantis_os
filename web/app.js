@@ -3174,12 +3174,47 @@ function buildPipeSettingsHtml() {
   const p = activePipe;
   const agOpts = agents.map(a => `<option value="${a.id}"${a.id===p.pmAgentId?' selected':''}>${escHtml(a.name)}</option>`).join('');
   const mdOpts = models.map(m => `<option value="${m}"${m===p.pmModel?' selected':''}>${escHtml(m)}</option>`).join('');
+  const mode = p.mode || 'fixed';
+  const rosterIds = new Set(p.roster || []);
+  const rosterHtml = agents.length ? agents.map(a => `
+      <label class="roster-pick-row">
+        <input type="checkbox" value="${a.id}"${rosterIds.has(a.id) ? ' checked' : ''}>
+        ${escHtml(a.name)}${a.role ? ` <span class="label-hint">(${escHtml(a.role)})</span>` : ''}
+      </label>`).join('')
+    : '<div class="label-hint">No agents yet — create some in the Agents tab first.</div>';
+
   return `<div class="detail-form">
     <div class="detail-field"><label>Name</label><input id="pd-name" value="${escHtml(p.name)}"></div>
     <div class="detail-field"><label>Goal / description</label><textarea id="pd-goal" rows="3">${escHtml(p.goal)}</textarea></div>
-    <div class="detail-field"><label>PM Agent</label><select id="pd-pm-agent"><option value="">— model only —</option>${agOpts}</select></div>
-    <div class="detail-field"><label>PM Model</label><select id="pd-pm-model"><option value="">— pick model —</option>${mdOpts}</select></div>
-    <div class="detail-field toggle-field"><label>Pause on QA fail</label><input type="checkbox" id="pd-pause"${p.pauseOnFail?' checked':''}></div>
+    <div class="detail-field"><label>Mode</label>
+      <select id="pd-mode">
+        <option value="fixed"${mode==='fixed'?' selected':''}>Fixed — authored step sequence</option>
+        <option value="dynamic"${mode==='dynamic'?' selected':''}>Dynamic — orchestrator decides each turn</option>
+      </select>
+    </div>
+    <div id="pd-fixed-fields" style="display:${mode==='fixed'?'block':'none'}">
+      <div class="detail-field"><label>PM Agent</label><select id="pd-pm-agent"><option value="">— model only —</option>${agOpts}</select></div>
+      <div class="detail-field"><label>PM Model</label><select id="pd-pm-model"><option value="">— pick model —</option>${mdOpts}</select></div>
+      <div class="detail-field toggle-field"><label>Pause on QA fail</label><input type="checkbox" id="pd-pause"${p.pauseOnFail?' checked':''}></div>
+    </div>
+    <div id="pd-dynamic-fields" style="display:${mode==='dynamic'?'block':'none'}">
+      <div class="detail-field">
+        <label>Roster <span class="label-hint">agents the orchestrator may invoke</span></label>
+        <div class="roster-picker" id="pd-roster">${rosterHtml}</div>
+      </div>
+      <div class="detail-field">
+        <label>Verify command <span class="label-hint">optional — a real shell command; empty falls back to a QA-role roster agent, then a self-check</span></label>
+        <input id="pd-verify-cmd" value="${escHtml(p.verifyCommand || '')}" placeholder="e.g. npm test">
+      </div>
+      <div class="detail-field">
+        <label>Work directory <span class="label-hint">where the roster's file/shell tools operate — blank auto-fills an isolated subdir on save</span></label>
+        <input id="pd-work-dir" value="${escHtml(p.workDir || '')}" placeholder="auto-generated on first save">
+      </div>
+      <details class="editor-details">
+        <summary>Advanced</summary>
+        <div class="detail-field"><label>Max turns</label><input type="number" id="pd-max-turns" value="${p.maxTurns || 20}" min="1" max="200" style="width:100px"></div>
+      </details>
+    </div>
     <div class="detail-actions">
       <button id="pd-save" class="btn-primary">Save</button>
       <button id="pd-del" class="btn-danger">Delete pipeline</button>
@@ -3188,16 +3223,42 @@ function buildPipeSettingsHtml() {
 }
 
 function bindPipeSettings() {
-  document.getElementById('pd-save')?.addEventListener('click', () => {
-    savePipeline({
-      name:        document.getElementById('pd-name').value.trim() || 'Pipeline',
-      goal:        document.getElementById('pd-goal').value,
-      pmAgentId:   document.getElementById('pd-pm-agent').value || null,
-      pmModel:     document.getElementById('pd-pm-model').value,
-      pauseOnFail: document.getElementById('pd-pause').checked,
-    });
+  document.getElementById('pd-mode')?.addEventListener('change', e => {
+    const dyn = e.target.value === 'dynamic';
+    document.getElementById('pd-fixed-fields').style.display = dyn ? 'none' : 'block';
+    document.getElementById('pd-dynamic-fields').style.display = dyn ? 'block' : 'none';
+  });
+  document.getElementById('pd-save')?.addEventListener('click', async () => {
+    const mode = document.getElementById('pd-mode').value;
+    const updates = {
+      name: document.getElementById('pd-name').value.trim() || 'Pipeline',
+      goal: document.getElementById('pd-goal').value,
+      mode,
+    };
+    if (mode === 'fixed') {
+      updates.pmAgentId   = document.getElementById('pd-pm-agent').value || null;
+      updates.pmModel     = document.getElementById('pd-pm-model').value;
+      updates.pauseOnFail = document.getElementById('pd-pause').checked;
+    } else {
+      updates.roster       = [...document.querySelectorAll('#pd-roster input:checked')].map(el => el.value);
+      updates.verifyCommand = document.getElementById('pd-verify-cmd').value.trim();
+      updates.maxTurns      = parseInt(document.getElementById('pd-max-turns').value, 10) || 20;
+      let workDir = document.getElementById('pd-work-dir').value.trim();
+      if (!workDir) workDir = await resolveDefaultWorkDir(activePipe.id);
+      updates.workDir = workDir;
+    }
+    await savePipeline(updates);
   });
   document.getElementById('pd-del')?.addEventListener('click', () => deletePipeline(activePipe.id));
+}
+
+// Dynamic pipelines not created from an open Code session default to an isolated
+// subdir under the global workspace root, so ad hoc/Pipelines-tab pipelines can't
+// collide with each other or with whatever the Code editor has open.
+async function resolveDefaultWorkDir(pipelineId) {
+  const session = await api('GET', '/api/code-session').catch(() => null);
+  const root = session?.root_path || '';
+  return root ? `${root.replace(/\/+$/, '')}/pipelines/${pipelineId}/` : '';
 }
 
 // The run feedback applies to: the one parked at the gate, else the viewed run,

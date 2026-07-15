@@ -3996,3 +3996,24 @@ button:not(:disabled):active {
 .editor-details summary::-webkit-details-marker { display: none; }
 .editor-details[open] summary { border-bottom: 1px solid var(--border); margin-bottom: 8px; }
 .editor-details .editor-field:last-child { padding-bottom: 12px; }
+
+/* ── Pipeline settings — dynamic mode fields ───────────────────────── */
+.roster-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.roster-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+.roster-pick-row input { flex-shrink: 0; }
