@@ -80,15 +80,16 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
   aiProvider.listSkills().then(list => {
     skills = list;
     skillPicker.innerHTML = '<option value="">No skill</option>' +
-      skills.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+      skills.map(s => `<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
   }).catch(() => {});
   skillPicker.addEventListener('change', () => { pinnedSkill = skillPicker.value || null; });
 
   function renderSuggestChip() {
     if (!suggestedSkill) { suggestChip.classList.add('hidden'); suggestChip.innerHTML = ''; return; }
     const skill = skills.find(s => s.id === suggestedSkill);
+    if (!skill) { suggestChip.classList.add('hidden'); suggestChip.innerHTML = ''; return; }
     suggestChip.classList.remove('hidden');
-    suggestChip.innerHTML = `Use <b>${skill.name}</b> skill? <button class="code-suggest-accept">Accept</button><button class="code-suggest-dismiss">Dismiss</button>`;
+    suggestChip.innerHTML = `Use <b>${escHtml(skill.name)}</b> skill? <button class="code-suggest-accept">Accept</button><button class="code-suggest-dismiss">Dismiss</button>`;
     suggestChip.querySelector('.code-suggest-accept').addEventListener('click', () => {
       pinnedSkill = skill.id;
       skillPicker.value = skill.id;
@@ -115,13 +116,12 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
       try { result = await api('POST', '/api/skills/match', { text }); } catch (_) { result = null; }
       if (result?.skillId) {
         suggestedSkill = result.skillId;
-      } else if (result === null || result?.error) {
-        // Embedding match unavailable — fall back to the substring check.
+      } else {
+        // No match (or an in-band error, or no eligible embeddings server-side) —
+        // always fall back to the substring/triggers check before giving up.
         const lower = text.toLowerCase();
         const fallback = skills.find(s => (s.triggers || []).some(t => lower.includes(t)));
         suggestedSkill = fallback ? fallback.id : null;
-      } else {
-        suggestedSkill = null;
       }
       renderSuggestChip();
     }, 400);

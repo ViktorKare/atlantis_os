@@ -1487,8 +1487,7 @@ def execute_job(job):
                     ]
                     if agent_tools_cfg.get('files') or agent_tools_cfg.get('shell'):
                         tool_lines.append(
-                            f'WORKSPACE ROOT: {work_root} — every file path MUST start with this prefix; '
-                            f'commands run there by default.')
+                            f'WORKSPACE ROOT: {work_root} — every file path MUST start with this prefix.')
                         if user_fb:
                             tool_lines.append(
                                 'REVISION RUN: the previous run\'s files already exist under the '

@@ -543,6 +543,7 @@ async function createSkill() {
   await api('POST', '/api/skills', skill).catch(() => {});
   renderSkillList();
   renderSkillEditor(skill);
+  refreshSkillDropdown();
 }
 
 async function deleteSkill(id) {
@@ -552,6 +553,7 @@ async function deleteSkill(id) {
   api('DELETE', `/api/skills/${id}`).catch(() => {});
   renderSkillList();
   renderSkillEditor(skills.find(s => s.id === activeSkillId) || null);
+  refreshSkillDropdown();
 }
 
 function saveSkillFromForm(id) {
@@ -563,6 +565,7 @@ function saveSkillFromForm(id) {
   skill.instructions = document.getElementById('skill-instructions').value;
   api('PUT', `/api/skills/${id}`, skill).catch(() => {});
   renderSkillList();
+  refreshSkillDropdown();
   const btn = document.getElementById('save-skill-btn');
   if (btn) { btn.textContent = 'Saved!'; setTimeout(() => { btn.textContent = 'Save skill'; }, 1500); }
 }
@@ -1903,8 +1906,9 @@ userInput.addEventListener('input', () => {
     if (match?.skillId) {
       skillId = match.skillId;
       skillName = match.name;
-    } else if (match === null || match?.error) {
-      // Embedding match unavailable — fall back to the substring check.
+    } else {
+      // No match (or an in-band error, or no eligible embeddings server-side) —
+      // always fall back to the substring/triggers check before giving up.
       const lower = text.toLowerCase();
       const fallback = skills.find(s => (s.triggers || []).some(t => lower.includes(t)));
       if (fallback) { skillId = fallback.id; skillName = fallback.name; }
