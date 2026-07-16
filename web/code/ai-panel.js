@@ -81,7 +81,7 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     skills = list;
     skillPicker.innerHTML = '<option value="">No skill</option>' +
       skills.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
-  });
+  }).catch(() => {});
   skillPicker.addEventListener('change', () => { pinnedSkill = skillPicker.value || null; });
 
   function renderSuggestChip() {
