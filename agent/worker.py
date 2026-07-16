@@ -1916,6 +1916,15 @@ def execute_dynamic_job(job, pipeline, all_agents, cfg, router, base_ctx, pm_mod
                                'reasoning': decision.get('reasoning', ''),
                                'instructions': decision.get('instructions', '')})
 
+            skill, skill_score = match_skill(decision.get('instructions', ''), cfg)
+            if skill:
+                log_event(job_id, {'type': 'skill_matched', 'turnIndex': turn_index,
+                                   'skillId': skill['id'], 'skillName': skill['name'],
+                                   'score': round(skill_score, 3)})
+            else:
+                log_event(job_id, {'type': 'skill_match_unavailable', 'turnIndex': turn_index,
+                                   'reason': 'no skill above threshold or embedding unavailable'})
+
             if action == 'fail':
                 update_turn(run_id, turn_index, status='done', finished_at=datetime.datetime.now().isoformat())
                 reason = decision.get('reasoning', 'Orchestrator gave up')
@@ -1928,6 +1937,8 @@ def execute_dynamic_job(job, pipeline, all_agents, cfg, router, base_ctx, pm_mod
                 sys_parts = []
                 if agent.get('system_prompt'):
                     sys_parts.append(agent['system_prompt'])
+                if skill:
+                    sys_parts.append(skill['instructions'])
                 sys_parts.append(
                     f'Your role: {agent.get("role") or "(unspecified)"}\n'
                     f'Your goal: {agent.get("agent_goal") or "(unspecified)"}\n'
