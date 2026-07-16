@@ -131,7 +131,7 @@ export class RealAIProvider {
   }
 
   async listSkills() {
-    return new MockAIProvider().listSkills();
+    return api('GET', '/api/skills');
   }
 
   async *chat({ messages, model, tools }) {

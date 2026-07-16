@@ -103,13 +103,28 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
 
   input.addEventListener('focus', () => spinWrap.classList.add('focused'));
   input.addEventListener('blur',  () => spinWrap.classList.remove('focused'));
+  let skillMatchTimer = null;
   input.addEventListener('input', () => {
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight, 120) + 'px';
-    const text = input.value.toLowerCase();
-    const match = skills.find(s => s.triggers.some(t => text.includes(t)));
-    suggestedSkill = match ? match.id : null;
-    renderSuggestChip();
+    clearTimeout(skillMatchTimer);
+    const text = input.value;
+    if (!text.trim()) { suggestedSkill = null; renderSuggestChip(); return; }
+    skillMatchTimer = setTimeout(async () => {
+      let result;
+      try { result = await api('POST', '/api/skills/match', { text }); } catch (_) { result = null; }
+      if (result?.skillId) {
+        suggestedSkill = result.skillId;
+      } else if (result === null || result?.error) {
+        // Embedding match unavailable — fall back to the substring check.
+        const lower = text.toLowerCase();
+        const fallback = skills.find(s => (s.triggers || []).some(t => lower.includes(t)));
+        suggestedSkill = fallback ? fallback.id : null;
+      } else {
+        suggestedSkill = null;
+      }
+      renderSuggestChip();
+    }, 400);
   });
 
   let busy = false;
