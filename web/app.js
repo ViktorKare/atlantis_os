@@ -1642,11 +1642,14 @@ async function send() {
   const manifest  = buildToolManifest(toolPerms);
 
   const apiMessages = [];
+  let workspaceRoot = '';
+  try { workspaceRoot = (await api('GET', '/api/code-session'))?.root_path || ''; } catch (_) {}
   const sysParts = [
     settings.chatPrePrompt?.trim(),
     agent ? settings.agentPrePrompt?.trim() : '',
     sysText,
     manifest,
+    workspaceRoot ? `WORKSPACE ROOT: ${workspaceRoot} — every file path MUST start with this prefix.` : '',
   ].filter(Boolean);
   if (sysParts.length) apiMessages.push({ role: 'system', content: sysParts.join('\n\n') });
   apiMessages.push(...thread.messages.filter(m => m.role !== 'system'));
