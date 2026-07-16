@@ -797,6 +797,29 @@ body::before {
 .pill-select:focus  { border-color: var(--accent); }
 #agent-select.pill-select { color: var(--text-dim); }
 
+.chat-suggest-chip {
+  margin: 0 10px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  background: var(--bg3);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.chat-suggest-chip.hidden { display: none; }
+.chat-suggest-chip button {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
 .send-btn {
   width: 32px;
   height: 32px;

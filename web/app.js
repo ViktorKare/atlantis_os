@@ -634,6 +634,14 @@ function refreshAgentDropdown() {
     agents.map(a => `<option value="${a.id}"${a.id === cur ? ' selected' : ''}>${escHtml(a.name)}</option>`).join('');
 }
 
+function refreshSkillDropdown() {
+  const sel = document.getElementById('skill-select');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">No skill</option>' +
+    skills.map(s => `<option value="${s.id}">${escHtml(s.name)}</option>`).join('');
+  sel.value = skills.some(s => s.id === cur) ? cur : '';
+}
+
 // ── Home ──────────────────────────────────────────────────────────────────────
 function homeGreetingText() {
   const h = new Date().getHours();
@@ -1644,12 +1652,15 @@ async function send() {
   const apiMessages = [];
   let workspaceRoot = '';
   try { workspaceRoot = (await api('GET', '/api/code-session'))?.root_path || ''; } catch (_) {}
+  const pinnedSkillId = document.getElementById('skill-select').value;
+  const pinnedSkill = pinnedSkillId ? skills.find(s => s.id === pinnedSkillId) : null;
   const sysParts = [
     settings.chatPrePrompt?.trim(),
     agent ? settings.agentPrePrompt?.trim() : '',
     sysText,
     manifest,
     workspaceRoot ? `WORKSPACE ROOT: ${workspaceRoot} — every file path MUST start with this prefix.` : '',
+    pinnedSkill ? pinnedSkill.instructions : '',
   ].filter(Boolean);
   if (sysParts.length) apiMessages.push({ role: 'system', content: sysParts.join('\n\n') });
   apiMessages.push(...thread.messages.filter(m => m.role !== 'system'));
@@ -1877,6 +1888,34 @@ userInput.addEventListener('keydown', e => {
 userInput.addEventListener('input', () => {
   userInput.style.height = 'auto';
   userInput.style.height = Math.min(userInput.scrollHeight, 160) + 'px';
+});
+
+let skillMatchTimer = null;
+userInput.addEventListener('input', () => {
+  clearTimeout(skillMatchTimer);
+  const text = userInput.value.trim();
+  const chip = document.getElementById('chat-suggest-chip');
+  if (!text) { chip.classList.add('hidden'); chip.innerHTML = ''; return; }
+  skillMatchTimer = setTimeout(async () => {
+    let match;
+    try { match = await api('POST', '/api/skills/match', { text }); } catch (_) { match = null; }
+    if (match?.skillId) {
+      chip.classList.remove('hidden');
+      chip.innerHTML = `Use <b>${escHtml(match.name)}</b> skill? <button class="chip-accept">Accept</button><button class="chip-dismiss">Dismiss</button>`;
+      chip.querySelector('.chip-accept').addEventListener('click', () => {
+        document.getElementById('skill-select').value = match.skillId;
+        chip.classList.add('hidden');
+        chip.innerHTML = '';
+      });
+      chip.querySelector('.chip-dismiss').addEventListener('click', () => {
+        chip.classList.add('hidden');
+        chip.innerHTML = '';
+      });
+    } else {
+      chip.classList.add('hidden');
+      chip.innerHTML = '';
+    }
+  }, 400);
 });
 
 document.addEventListener('keydown', e => {
@@ -4895,6 +4934,7 @@ async function init() {
   maybeShowWelcomeOverlay();
   await fetchModels();
   refreshAgentDropdown();
+  refreshSkillDropdown();
   // Restore last active thread's model/agent
   const t = activeThread();
   if (t?.model && models.includes(t.model)) { modelSelect.value = t.model; state.model = t.model; }
