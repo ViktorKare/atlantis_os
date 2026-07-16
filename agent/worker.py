@@ -1396,8 +1396,6 @@ def execute_job(job):
                 sys_parts = []
                 if agent and agent.get('system_prompt'):
                     sys_parts.append(agent['system_prompt'])
-                if agent_tools_cfg.get('files') or agent_tools_cfg.get('shell'):
-                    sys_parts.append(f'WORKSPACE ROOT: {work_root} — every file path MUST start with this prefix.')
                 total_steps = len(steps)
                 sys_parts.append(
                     f'Pipeline goal: {pipeline["goal"]}\n'
