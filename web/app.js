@@ -238,7 +238,8 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
   settings.defaultAgentIdFallback = document.getElementById('setting-default-agent-fallback')?.value || '';
   settings.codeGhostTextTier    = document.getElementById('setting-code-ghost-tier')?.value || 'local';
   settings.embeddingModel       = document.getElementById('setting-embedding-model')?.value.trim() || 'nomic-embed-text';
-  settings.skillMatchThreshold  = parseFloat(document.getElementById('setting-skill-threshold')?.value) || 0.75;
+  const skillThreshVal = parseFloat(document.getElementById('setting-skill-threshold')?.value);
+  settings.skillMatchThreshold  = Number.isNaN(skillThreshVal) ? 0.75 : skillThreshVal;
   const btn = document.getElementById('save-settings-btn');
   btn.disabled = true;
   saveSettings()
