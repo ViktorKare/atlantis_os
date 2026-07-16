@@ -139,6 +139,7 @@ function switchSection(name) {
 
   if (name === 'home')     initHome();
   if (name === 'agents')   renderAgentList();
+  if (name === 'skills')   loadSkills().then(() => renderSkillList());
   if (name === 'tasks')    loadTasks().then(() => renderTaskList());
   if (name === 'plans')    loadPlanList().then(() => renderPlanList());
   if (name === 'pipelines') { initPipeCanvas(); loadPipelines().then(renderPipeList); }
@@ -525,6 +526,107 @@ function renderAgentEditor(agent) {
   document.getElementById('save-agent-btn').addEventListener('click', () => saveAgentFromForm(agent.id));
   document.getElementById('delete-agent-btn').addEventListener('click', () => deleteAgent(agent.id));
 }
+
+// ── Skills ────────────────────────────────────────────────────────────────────
+let skills = [];
+let activeSkillId = null;
+
+async function loadSkills() {
+  try { skills = await api('GET', '/api/skills'); } catch (_) {}
+  if (!Array.isArray(skills)) skills = [];
+}
+
+async function createSkill() {
+  const skill = { id: uid(), name: 'New skill', description: '', triggers: [], instructions: '' };
+  skills.unshift(skill);
+  activeSkillId = skill.id;
+  await api('POST', '/api/skills', skill).catch(() => {});
+  renderSkillList();
+  renderSkillEditor(skill);
+}
+
+async function deleteSkill(id) {
+  if (!confirm('Delete this skill?')) return;
+  skills = skills.filter(s => s.id !== id);
+  if (activeSkillId === id) activeSkillId = skills[0]?.id || null;
+  api('DELETE', `/api/skills/${id}`).catch(() => {});
+  renderSkillList();
+  renderSkillEditor(skills.find(s => s.id === activeSkillId) || null);
+}
+
+function saveSkillFromForm(id) {
+  const skill = skills.find(s => s.id === id);
+  if (!skill) return;
+  skill.name         = document.getElementById('skill-name').value.trim() || 'Unnamed';
+  skill.description  = document.getElementById('skill-description').value;
+  skill.triggers     = document.getElementById('skill-triggers').value.split(',').map(t => t.trim()).filter(Boolean);
+  skill.instructions = document.getElementById('skill-instructions').value;
+  api('PUT', `/api/skills/${id}`, skill).catch(() => {});
+  renderSkillList();
+  const btn = document.getElementById('save-skill-btn');
+  if (btn) { btn.textContent = 'Saved!'; setTimeout(() => { btn.textContent = 'Save skill'; }, 1500); }
+}
+
+function renderSkillList() {
+  const list = document.getElementById('skill-list');
+  list.innerHTML = '';
+  skills.forEach(skill => {
+    const li = document.createElement('li');
+    li.className = skill.id === activeSkillId ? 'active' : '';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'item-name';
+    nameSpan.textContent = skill.name;
+
+    const subSpan = document.createElement('span');
+    subSpan.className = 'item-sub';
+    subSpan.textContent = skill.embeddingPending ? 'embedding pending…' : (skill.description || '—');
+
+    li.appendChild(nameSpan);
+    li.appendChild(subSpan);
+    li.addEventListener('click', () => {
+      activeSkillId = skill.id;
+      renderSkillList();
+      renderSkillEditor(skill);
+    });
+    list.appendChild(li);
+  });
+}
+
+function renderSkillEditor(skill) {
+  const main = document.getElementById('skills-main');
+  if (!skill) {
+    main.innerHTML = '<p class="empty-state">Select a skill or create a new one</p>';
+    return;
+  }
+  main.innerHTML = `
+    <div class="editor-form">
+      <div class="editor-field">
+        <label>Name</label>
+        <input type="text" id="skill-name" value="${escHtml(skill.name)}">
+      </div>
+      <div class="editor-field">
+        <label>Description</label>
+        <textarea id="skill-description" rows="3" placeholder="What this skill is for...">${escHtml(skill.description || '')}</textarea>
+      </div>
+      <div class="editor-field">
+        <label>Triggers <span class="label-hint">(comma-separated, used only if embedding matching is unavailable)</span></label>
+        <input type="text" id="skill-triggers" value="${escHtml((skill.triggers || []).join(', '))}">
+      </div>
+      <div class="editor-field">
+        <label>Instructions <span class="label-hint">(injected into the system prompt when this skill is active)</span></label>
+        <textarea id="skill-instructions" rows="6" placeholder="Enter instructions...">${escHtml(skill.instructions || '')}</textarea>
+      </div>
+      <div class="editor-actions">
+        <button id="delete-skill-btn" class="btn-danger">Delete</button>
+        <button id="save-skill-btn" class="btn-primary">Save skill</button>
+      </div>
+    </div>`;
+  document.getElementById('save-skill-btn').addEventListener('click', () => saveSkillFromForm(skill.id));
+  document.getElementById('delete-skill-btn').addEventListener('click', () => deleteSkill(skill.id));
+}
+
+document.getElementById('new-skill-btn').addEventListener('click', createSkill);
 
 function refreshAgentDropdown() {
   const cur = agentSelect.value;
@@ -4786,7 +4888,7 @@ function initCode() {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
-  await Promise.all([loadSettings(), loadAgents(), loadTasks(), load(), loadHosts()]);
+  await Promise.all([loadSettings(), loadAgents(), loadSkills(), loadTasks(), load(), loadHosts()]);
   maybeShowWelcomeOverlay();
   await fetchModels();
   refreshAgentDropdown();
