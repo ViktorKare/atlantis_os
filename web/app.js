@@ -214,6 +214,11 @@ function initSettingsForm() {
       `<option value="${t}"${(settings.codeGhostTextTier || 'local') === t ? ' selected' : ''}>${TIER_LABELS[t]}</option>`
     ).join('');
   }
+
+  const embModelEl = document.getElementById('setting-embedding-model');
+  if (embModelEl) embModelEl.value = settings.embeddingModel || 'nomic-embed-text';
+  const skillThreshEl = document.getElementById('setting-skill-threshold');
+  if (skillThreshEl) skillThreshEl.value = settings.skillMatchThreshold ?? 0.75;
 }
 
 document.getElementById('save-settings-btn').addEventListener('click', () => {
@@ -232,6 +237,8 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
   settings.defaultAgentId        = document.getElementById('setting-default-agent')?.value || '';
   settings.defaultAgentIdFallback = document.getElementById('setting-default-agent-fallback')?.value || '';
   settings.codeGhostTextTier    = document.getElementById('setting-code-ghost-tier')?.value || 'local';
+  settings.embeddingModel       = document.getElementById('setting-embedding-model')?.value.trim() || 'nomic-embed-text';
+  settings.skillMatchThreshold  = parseFloat(document.getElementById('setting-skill-threshold')?.value) || 0.75;
   const btn = document.getElementById('save-settings-btn');
   btn.disabled = true;
   saveSettings()

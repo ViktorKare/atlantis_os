@@ -554,6 +554,19 @@
           </div>
 
           <div class="settings-group">
+            <h3>Skills</h3>
+            <p class="settings-hint">Used to match skills to what you're typing or tasking, across Chat, Code chat, and Pipelines.</p>
+            <div class="settings-field">
+              <label for="setting-embedding-model">Embedding model</label>
+              <input type="text" id="setting-embedding-model" placeholder="nomic-embed-text">
+            </div>
+            <div class="settings-field">
+              <label for="setting-skill-threshold">Match threshold <span class="label-hint">(0-1, higher = stricter)</span></label>
+              <input type="number" id="setting-skill-threshold" min="0" max="1" step="0.05">
+            </div>
+          </div>
+
+          <div class="settings-group">
             <h3>API Keys</h3>
             <p class="settings-hint">Used by the worker when a pipeline step's model tier is set to fast / smart / powerful.</p>
             <div class="settings-field">
