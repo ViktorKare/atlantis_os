@@ -213,6 +213,7 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     const manifest = buildCodeToolManifest(toolPerms);
     const skillForThisMessage = pinnedSkill;
     if (skillForThisMessage) appendSkillBanner(skillForThisMessage);
+    const pinnedSkillObj = skillForThisMessage ? skills.find(s => s.id === skillForThisMessage) : null;
 
     let workspaceLine = '';
     try {
@@ -226,7 +227,7 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     } catch (_) {}
 
     const apiMessages = [];
-    const sysMsg = [manifest, workspaceLine].filter(Boolean).join('\n\n');
+    const sysMsg = [manifest, workspaceLine, pinnedSkillObj?.instructions].filter(Boolean).join('\n\n');
     if (sysMsg) apiMessages.push({ role: 'system', content: sysMsg });
     apiMessages.push(...history);
 

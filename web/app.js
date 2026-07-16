@@ -1899,11 +1899,21 @@ userInput.addEventListener('input', () => {
   skillMatchTimer = setTimeout(async () => {
     let match;
     try { match = await api('POST', '/api/skills/match', { text }); } catch (_) { match = null; }
+    let skillId = null, skillName = null;
     if (match?.skillId) {
+      skillId = match.skillId;
+      skillName = match.name;
+    } else if (match === null || match?.error) {
+      // Embedding match unavailable — fall back to the substring check.
+      const lower = text.toLowerCase();
+      const fallback = skills.find(s => (s.triggers || []).some(t => lower.includes(t)));
+      if (fallback) { skillId = fallback.id; skillName = fallback.name; }
+    }
+    if (skillId) {
       chip.classList.remove('hidden');
-      chip.innerHTML = `Use <b>${escHtml(match.name)}</b> skill? <button class="chip-accept">Accept</button><button class="chip-dismiss">Dismiss</button>`;
+      chip.innerHTML = `Use <b>${escHtml(skillName)}</b> skill? <button class="chip-accept">Accept</button><button class="chip-dismiss">Dismiss</button>`;
       chip.querySelector('.chip-accept').addEventListener('click', () => {
-        document.getElementById('skill-select').value = match.skillId;
+        document.getElementById('skill-select').value = skillId;
         chip.classList.add('hidden');
         chip.innerHTML = '';
       });
