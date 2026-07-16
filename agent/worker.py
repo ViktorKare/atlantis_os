@@ -460,6 +460,58 @@ def resolve_ollama_endpoint(cfg):
             continue
     return candidates[0]
 
+def cosine_sim(a, b):
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na  = sum(x * x for x in a) ** 0.5
+    nb  = sum(y * y for y in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+def best_capacity_host_id():
+    with db_session() as db:
+        row = db.execute(
+            "SELECT id, ip, ollama_port FROM network_hosts WHERE enabled=1 AND capacity='full' ORDER BY priority ASC LIMIT 1"
+        ).fetchone()
+    return (f'http://{row["ip"]}:{row["ollama_port"]}') if row else None
+
+def embed_text(text, cfg, endpoint=None):
+    model = cfg.get('embeddingModel') or 'nomic-embed-text'
+    url = endpoint or best_capacity_host_id() or resolve_ollama_endpoint(cfg)
+    req = urllib.request.Request(
+        f'{url}/api/embeddings',
+        data=json.dumps({'model': model, 'prompt': text}).encode(),
+        headers={'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode())
+    return data.get('embedding')
+
+def match_skill(text, cfg):
+    """Returns (skill_dict, score) for the best skill above cfg's threshold, or (None, best_score_seen)."""
+    with db_session() as db:
+        rows = rows_to_list(db.execute(
+            "SELECT * FROM skills WHERE embedding IS NOT NULL"
+        ).fetchall())
+    current_model = cfg.get('embeddingModel') or 'nomic-embed-text'
+    rows = [r for r in rows if r.get('embedding_model') == current_model]
+    if not rows:
+        return None, 0.0
+    threshold = cfg.get('skillMatchThreshold')
+    if threshold is None:
+        threshold = 0.75
+    try:
+        query_vec = embed_text(text, cfg)
+    except Exception:
+        return None, 0.0
+    if not query_vec:
+        return None, 0.0
+    best, best_score = None, 0.0
+    for r in rows:
+        score = cosine_sim(query_vec, json.loads(r['embedding']))
+        if score > best_score:
+            best, best_score = r, score
+    return (best, best_score) if best and best_score >= threshold else (None, best_score)
+
 def estimate_tier(messages):
     total_chars = sum(len(str(m.get('content', ''))) for m in messages)
     tokens = total_chars // 4
@@ -1388,6 +1440,15 @@ def execute_job(job):
                                    'retryCount': retry_count, 'modelTier': step['modelTier'],
                                    'iteration': iteration})
 
+                skill, skill_score = match_skill(step.get('task', ''), cfg)
+                if skill:
+                    log_event(job_id, {'type': 'skill_matched', 'stepIndex': step_idx,
+                                       'skillId': skill['id'], 'skillName': skill['name'],
+                                       'score': round(skill_score, 3)})
+                else:
+                    log_event(job_id, {'type': 'skill_match_unavailable', 'stepIndex': step_idx,
+                                       'reason': 'no skill above threshold or embedding unavailable'})
+
                 agent = next((a for a in all_agents if a['id'] == step.get('agentId')), None)
                 agent_tools_cfg = json.loads(agent.get('tools') or '{}') if agent else {}
                 agent_tools = build_tools(agent_tools_cfg)
@@ -1396,6 +1457,8 @@ def execute_job(job):
                 sys_parts = []
                 if agent and agent.get('system_prompt'):
                     sys_parts.append(agent['system_prompt'])
+                if skill:
+                    sys_parts.append(skill['instructions'])
                 total_steps = len(steps)
                 sys_parts.append(
                     f'Pipeline goal: {pipeline["goal"]}\n'
