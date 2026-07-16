@@ -330,6 +330,14 @@ def row_to_dict(row):
 def rows_to_list(rows):
     return [dict(r) for r in rows]
 
+def cosine_sim(a, b):
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na  = sum(x * x for x in a) ** 0.5
+    nb  = sum(y * y for y in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
 def regenerate_ollama_endpoint_setting(db):
     """Rebuild settings.endpoint from network_hosts (enabled rows, ordered
     by priority), always appending localhost last as the final fallback.
@@ -875,6 +883,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 db.execute('INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)',
                            (k, json.dumps(v)))
         self._json({'ok': True})
+
+    def _settings_value(self, key, default=None):
+        with get_db() as db:
+            row = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+        if not row:
+            return default
+        try:
+            return json.loads(row['value'])
+        except (json.JSONDecodeError, TypeError):
+            return row['value']
 
     # ── Agents ──────────────────────────────────────────────────────────────
 
@@ -2673,6 +2691,58 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json({'ok': True})
         except Exception as e:
             self._json({'ok': False, 'error': str(e)}, 502)
+
+    def _best_capacity_host_id(self):
+        with get_db() as db:
+            row = db.execute(
+                "SELECT id FROM network_hosts WHERE enabled=1 AND capacity='full' ORDER BY priority ASC LIMIT 1"
+            ).fetchone()
+        return row['id'] if row else None
+
+    def _embed_text(self, text, host_id=None):
+        model = self._settings_value('embeddingModel') or 'nomic-embed-text'
+        req = urllib.request.Request(
+            f'{self._models_endpoint(host_id)}/api/embeddings',
+            data=json.dumps({'model': model, 'prompt': text}).encode(),
+            headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode())
+        return data.get('embedding'), model
+
+    def _pull_model_sync(self, name, host_id=None):
+        """Blocking pull with no progress streamed to a client — used when a
+        skill save needs an embedding model that isn't pulled yet."""
+        try:
+            req = urllib.request.Request(
+                f'{self._models_endpoint(host_id)}/api/pull',
+                data=json.dumps({'model': name, 'stream': True}).encode(),
+                headers={'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req, timeout=3600) as resp:
+                for _ in resp:
+                    pass  # drain; success = reaching EOF without an exception
+            return True
+        except Exception as e:
+            print(f'[skills] embedding model pull failed: {e}')
+            return False
+
+    def _ensure_skill_embedding(self, name, description, triggers):
+        model = self._settings_value('embeddingModel') or 'nomic-embed-text'
+        host_id = self._best_capacity_host_id()
+        try:
+            with urllib.request.urlopen(f'{self._models_endpoint(host_id)}/api/tags', timeout=5) as resp:
+                tags = json.loads(resp.read().decode()).get('models', [])
+            have_it = any(m.get('name', '').split(':')[0] == model.split(':')[0] for m in tags)
+        except Exception:
+            have_it = False
+        if not have_it and not self._pull_model_sync(model, host_id):
+            return None, None
+        text = f'{name}\n{description}\n{", ".join(triggers)}'
+        try:
+            embedding, embed_model = self._embed_text(text, host_id)
+        except Exception as e:
+            print(f'[skills] embedding compute failed: {e}')
+            return None, None
+        return (json.dumps(embedding) if embedding else None), embed_model
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
