@@ -715,6 +715,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         p = self.path.split('?')[0]
         if   p == '/api/settings':          self._get_settings()
         elif p == '/api/agents':            self._get_agents()
+        elif p == '/api/skills':            self._get_skills()
         elif p == '/api/hosts':             self._get_hosts()
         elif p == '/api/threads':           self._get_threads()
         elif p.startswith('/api/threads/') and p.endswith('/messages'):
@@ -765,6 +766,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         body = self._read_body()
         if   p == '/api/settings':          self._post_settings(body)
         elif p == '/api/agents':            self._post_agent(body)
+        elif p == '/api/skills':            self._post_skill(body)
         elif p == '/api/hosts':             self._post_host(body)
         elif p == '/api/hosts/reorder':     self._reorder_hosts(body)
         elif p == '/api/hosts/check':       self._check_hosts()
@@ -812,6 +814,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         body = self._read_body()
         if p.startswith('/api/agents/'):
             self._put_agent(p.split('/')[3], body)
+        elif p.startswith('/api/skills/'):
+            self._put_skill(p.split('/')[3], body)
         elif p.startswith('/api/hosts/'):
             self._put_host(p.split('/')[3], body)
         elif p.startswith('/api/threads/') and not p.endswith('/messages'):
@@ -834,6 +838,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p.startswith('/api/code-layouts/'):
             self._delete_code_layout(urllib.parse.unquote(p.split('/')[3]))
         elif p.startswith('/api/agents/'):  self._delete_agent(p.split('/')[3])
+        elif p.startswith('/api/skills/'):  self._delete_skill(p.split('/')[3])
         elif p.startswith('/api/hosts/'):   self._delete_host(p.split('/')[3])
         elif p.startswith('/api/threads/') and p.endswith('/messages'):
             self._delete_messages(p.split('/')[3])
@@ -943,6 +948,73 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             'tools': tools, 'fallbackModel': row['fallback_model'] or '',
             'role': row['role'] or '', 'agentGoal': row['agent_goal'] or '',
             'expectedOutput': row['expected_output'] or '',
+        }
+
+    # ── Skills ──────────────────────────────────────────────────────────────
+
+    def _get_skills(self):
+        with get_db() as db:
+            rows = rows_to_list(db.execute('SELECT * FROM skills ORDER BY name').fetchall())
+        self._json([self._skill_out(r) for r in rows])
+
+    def _post_skill(self, body):
+        name        = body.get('name', '')
+        description = body.get('description', '')
+        triggers    = body.get('triggers') or []
+        now = datetime.datetime.now().isoformat()
+        embedding, embed_model = self._ensure_skill_embedding(name, description, triggers)
+        with get_db() as db:
+            db.execute(
+                'INSERT INTO skills (id,name,description,triggers,instructions,embedding,embedding_model,created_at,updated_at) '
+                'VALUES (?,?,?,?,?,?,?,?,?)',
+                (body['id'], name, description, json.dumps(triggers), body.get('instructions', ''),
+                 embedding, embed_model, now, now)
+            )
+        self._json({'ok': True})
+
+    def _put_skill(self, id, body):
+        name        = body.get('name', '')
+        description = body.get('description', '')
+        triggers    = body.get('triggers') or []
+        with get_db() as db:
+            row = db.execute(
+                'SELECT name, description, triggers, embedding, embedding_model FROM skills WHERE id=?', (id,)
+            ).fetchone()
+        current_model = self._settings_value('embeddingModel') or 'nomic-embed-text'
+        try:
+            old_triggers = json.loads(row['triggers'] or '[]') if row else None
+        except Exception:
+            old_triggers = None
+        text_changed = (not row or row['name'] != name or row['description'] != description
+                        or old_triggers != triggers)
+        stale = not row or row['embedding'] is None or row['embedding_model'] != current_model or text_changed
+        if stale:
+            embedding, embed_model = self._ensure_skill_embedding(name, description, triggers)
+        else:
+            embedding, embed_model = row['embedding'], row['embedding_model']
+        now = datetime.datetime.now().isoformat()
+        with get_db() as db:
+            db.execute(
+                'UPDATE skills SET name=?,description=?,triggers=?,instructions=?,embedding=?,embedding_model=?,updated_at=? WHERE id=?',
+                (name, description, json.dumps(triggers), body.get('instructions', ''),
+                 embedding, embed_model, now, id)
+            )
+        self._json({'ok': True})
+
+    def _delete_skill(self, id):
+        with get_db() as db:
+            db.execute('DELETE FROM skills WHERE id=?', (id,))
+        self._json({'ok': True})
+
+    def _skill_out(self, row):
+        try:
+            triggers = json.loads(row['triggers'] or '[]')
+        except Exception:
+            triggers = []
+        return {
+            'id': row['id'], 'name': row['name'], 'description': row['description'],
+            'triggers': triggers, 'instructions': row['instructions'],
+            'embeddingPending': row['embedding'] is None,
         }
 
     # ── Network hosts ──────────────────────────────────────────────────────
