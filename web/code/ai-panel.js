@@ -199,8 +199,20 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     const skillForThisMessage = pinnedSkill;
     if (skillForThisMessage) appendSkillBanner(skillForThisMessage);
 
+    let workspaceLine = '';
+    try {
+      const session = await api('GET', '/api/code-session');
+      const root = session?.root_path || '';
+      if (root) {
+        workspaceLine = `WORKSPACE ROOT: ${root} — every file path MUST start with this prefix.`;
+        const activeFile = getFocusedEditor?.()?.getActiveFile();
+        if (activeFile) workspaceLine += `\nOpen file: ${activeFile}`;
+      }
+    } catch (_) {}
+
     const apiMessages = [];
-    if (manifest) apiMessages.push({ role: 'system', content: manifest });
+    const sysMsg = [manifest, workspaceLine].filter(Boolean).join('\n\n');
+    if (sysMsg) apiMessages.push({ role: 'system', content: sysMsg });
     apiMessages.push(...history);
 
     let assistantDiv = null;
