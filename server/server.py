@@ -767,6 +767,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if   p == '/api/settings':          self._post_settings(body)
         elif p == '/api/agents':            self._post_agent(body)
         elif p == '/api/skills':            self._post_skill(body)
+        elif p == '/api/skills/match':      self._skills_match(body)
         elif p == '/api/hosts':             self._post_host(body)
         elif p == '/api/hosts/reorder':     self._reorder_hosts(body)
         elif p == '/api/hosts/check':       self._check_hosts()
@@ -1016,6 +1017,37 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             'triggers': triggers, 'instructions': row['instructions'],
             'embeddingPending': row['embedding'] is None,
         }
+
+    def _skills_match(self, body):
+        text = (body.get('text') or '').strip()
+        if not text:
+            return self._json({'skillId': None})
+        current_model = self._settings_value('embeddingModel') or 'nomic-embed-text'
+        with get_db() as db:
+            rows = rows_to_list(db.execute(
+                'SELECT * FROM skills WHERE embedding IS NOT NULL AND embedding_model=?', (current_model,)
+            ).fetchall())
+        if not rows:
+            return self._json({'skillId': None})
+        threshold = self._settings_value('skillMatchThreshold')
+        if threshold is None:
+            threshold = 0.75
+        try:
+            query_vec, _ = self._embed_text(text, self._best_capacity_host_id())
+        except Exception as e:
+            return self._json({'skillId': None, 'error': str(e)}, 502)
+        if not query_vec:
+            return self._json({'skillId': None, 'error': 'embedding_unavailable'}, 502)
+        best, best_score = None, 0.0
+        for r in rows:
+            score = cosine_sim(query_vec, json.loads(r['embedding']))
+            if score > best_score:
+                best, best_score = r, score
+        if best and best_score >= threshold:
+            self._json({'skillId': best['id'], 'name': best['name'],
+                        'instructions': best['instructions'], 'score': round(best_score, 3)})
+        else:
+            self._json({'skillId': None, 'score': round(best_score, 3) if best else 0.0})
 
     # ── Network hosts ──────────────────────────────────────────────────────
 
