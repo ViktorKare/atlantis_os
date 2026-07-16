@@ -62,6 +62,11 @@
             <polyline points="8 6 2 12 8 18"/>
           </svg>
         </button>
+        <button class="nav-btn" data-section="skills" title="Skills">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2l2.4 7.2H22l-6 4.6 2.3 7.2-6.3-4.6-6.3 4.6 2.3-7.2-6-4.6h7.6z"/>
+          </svg>
+        </button>
 
         <button class="nav-btn" data-section="debug" title="Debug">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -220,6 +225,17 @@
       </aside>
       <div id="agents-main" class="editor-area">
         <p class="empty-state">Select an agent or create a new one</p>
+      </div>
+    </div>
+
+    <!-- ── Skills ────────────────────────────────────────────── -->
+    <div id="section-skills" class="section">
+      <aside class="section-sidebar">
+        <button id="new-skill-btn">+ New skill</button>
+        <ul id="skill-list"></ul>
+      </aside>
+      <div id="skills-main" class="editor-area">
+        <p class="empty-state">Select a skill or create a new one</p>
       </div>
     </div>
 
