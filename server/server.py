@@ -106,6 +106,17 @@ def init_db():
                 top_p        REAL    DEFAULT 0.9,
                 context_len  INTEGER DEFAULT 4096
             );
+            CREATE TABLE IF NOT EXISTS skills (
+                id              TEXT PRIMARY KEY,
+                name            TEXT NOT NULL,
+                description     TEXT NOT NULL DEFAULT '',
+                triggers        TEXT NOT NULL DEFAULT '[]',
+                instructions    TEXT NOT NULL DEFAULT '',
+                embedding       TEXT,
+                embedding_model TEXT,
+                created_at      TEXT,
+                updated_at      TEXT
+            );
             CREATE TABLE IF NOT EXISTS threads (
                 id            TEXT PRIMARY KEY,
                 name          TEXT,
