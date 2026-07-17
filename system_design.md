@@ -23,9 +23,9 @@ End users start/stop/restart via `start.sh`/`stop.sh`/`restart.sh` (Linux),
 `start.command`/`stop.command`/`restart.command` (macOS), or
 `start.bat`/`stop.bat`/`restart.bat` (Windows) — each a one-line wrapper around
 `python3 launcher.py --start`/`--stop`/`--restart`. The previous single-host
-deployment (systemd user services via `bash deploy/legacy/setup-services.sh`)
-still exists under `deploy/legacy/` for reference but is superseded by
-`launcher.py` + the autostart entry `install.py` registers.
+deployment (systemd user services via `setup-services.sh`) has been removed
+now that `launcher.py` + the autostart entry `install.py` registers fully
+supersede it.
 
 ### Directory layout
 
@@ -33,8 +33,6 @@ still exists under `deploy/legacy/` for reference but is superseded by
 web/            — frontend: app.js, index.html, style.css, favicon.ico
 server/         — server.py (HTTP API)
 agent/          — worker.py (job daemon)
-deploy/legacy/  — pre-installer systemd deployment (four .service files,
-                  setup-services.sh, restart.sh, searxng-settings.yml)
 data/           — gitignored except .gitkeep: data.db, zone/, ollama/
                   (no-root Linux Ollama install), certs/, launcher.pid,
                   .restart / .stop flag files
@@ -513,15 +511,6 @@ POST /api/system/stop       no body → {ok: true}
   │                                    atlantis.config.json loader + /api/system/*
   ├── agent/
   │   └── worker.py                 — job daemon: pipeline executor, model router
-  ├── deploy/legacy/                — pre-installer systemd deployment (kept for
-  │                                    reference, superseded by launcher.py/install.py)
-  │   ├── atlantis-server.service
-  │   ├── atlantis-worker.service
-  │   ├── atlantis-code-server.service
-  │   ├── atlantis-searxng.service
-  │   ├── setup-services.sh
-  │   ├── restart.sh
-  │   └── searxng-settings.yml
   ├── data/                         — gitignored except .gitkeep
   │   ├── data.db                   — SQLite database (WAL mode, auto-created)
   │   ├── zone/
