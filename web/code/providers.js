@@ -142,7 +142,11 @@ export class RealAIProvider {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      let detail = '';
+      try { detail = (await res.json()).error; } catch (_) {}
+      throw new Error(detail || `HTTP ${res.status}`);
+    }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';

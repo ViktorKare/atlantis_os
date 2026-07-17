@@ -21,6 +21,11 @@ PROJECTS_DIR   = ZONE_DIR / 'projects'
 CONFIG_FILE    = ROOT_DIR / 'atlantis.config.json'
 DEFAULT_CONFIG = {'port': 5000, 'root_path': str(Path.home())}
 
+sys.path.insert(0, str(ROOT_DIR))
+from logging_setup import setup_logging, install_crash_handler
+logger = setup_logging('server')
+install_crash_handler('server', logger)
+
 def load_config():
     if not CONFIG_FILE.exists():
         return dict(DEFAULT_CONFIG)
@@ -427,6 +432,23 @@ def local_ips():
         _LOCAL_IPS_CACHE = ips
     return _LOCAL_IPS_CACHE
 
+def _probe_nvidia_vram_gb(ssh_base):
+    """Sum VRAM across all GPUs reported by nvidia-smi (MiB->GB), shared by
+    the linux and windows branches of probe_host_sysinfo since the query is
+    identical on both (nvidia-smi's CLI output doesn't vary by host OS).
+    Best-effort: missing binary/wrong GPU/driver issue degrades to 0 rather
+    than failing the whole probe."""
+    try:
+        result = subprocess.run(
+            ssh_base + ['nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits'],
+            capture_output=True, timeout=6, text=True
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return sum(float(x) for x in result.stdout.split()) * 1024**2 / 1e9
+    except Exception:
+        pass
+    return 0.0
+
 def probe_host_sysinfo(ip, ssh_user, os_, gpu_arch):
     """Remote equivalent of _models_sysinfo's local probe, run over SSH.
     Mirrors the same sysctl/proc-meminfo/nvidia-smi commands but targets
@@ -435,18 +457,24 @@ def probe_host_sysinfo(ip, ssh_user, os_, gpu_arch):
     no way to introspect a remote machine's platform without a command
     round-trip first, so the DB fields are trusted). Returns
     {'ram_gb', 'vram_gb', 'live'}; live=False on any failure or when
-    os is unsupported (windows, or NULL) — same BatchMode/StrictHostKeyChecking/
+    os is unsupported (NULL) — same BatchMode/StrictHostKeyChecking/
     ConnectTimeout flags as check_ssh_access, so a host that fails the
     Hosts-tab SSH check will also correctly report live=False here.
-    RAM and VRAM are probed as two independent ssh calls on Linux+nvidia
-    hosts (rather than one semicolon-chained command) so a failed
-    nvidia-smi — missing binary, wrong GPU, driver issue — degrades to a
-    real RAM number with vram_gb=0 instead of discarding a successful RAM
-    read just because the last command in a shell chain failed."""
+    RAM and VRAM are probed as two independent ssh calls on nvidia hosts
+    (rather than one chained command) so a failed nvidia-smi — missing
+    binary, wrong GPU, driver issue — degrades to a real RAM number with
+    vram_gb=0 instead of discarding a successful RAM read just because the
+    last command in a chain failed. Windows RAM uses PowerShell's
+    Get-CimInstance rather than `wmic` (deprecated/removed on newer
+    Windows) — the default OpenSSH-on-Windows shell is cmd.exe, so
+    `powershell -NoProfile -Command` is spelled out explicitly rather than
+    assumed as the login shell."""
     if os_ == 'macos':
         ram_cmd = 'sysctl -n hw.memsize'
     elif os_ == 'linux':
         ram_cmd = 'cat /proc/meminfo | grep MemTotal'
+    elif os_ == 'windows':
+        ram_cmd = 'powershell -NoProfile -Command "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"'
     else:
         return {'ram_gb': 0.0, 'vram_gb': 0.0, 'live': False}
     ssh_base = ['ssh', '-o', 'BatchMode=yes',
@@ -462,19 +490,12 @@ def probe_host_sysinfo(ip, ssh_user, os_, gpu_arch):
         if os_ == 'macos':
             ram_gb = int(line) / 1e9
             vram_gb = ram_gb if gpu_arch == 'apple_silicon' else 0.0
+        elif os_ == 'windows':
+            ram_gb = int(line) / 1e9
+            vram_gb = _probe_nvidia_vram_gb(ssh_base) if gpu_arch == 'nvidia' else 0.0
         else:
             ram_gb = int(line.split()[1]) * 1024 / 1e9
-            vram_gb = 0.0
-            if gpu_arch == 'nvidia':
-                try:
-                    vram_result = subprocess.run(
-                        ssh_base + ['nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits'],
-                        capture_output=True, timeout=6, text=True
-                    )
-                    if vram_result.returncode == 0 and vram_result.stdout.strip():
-                        vram_gb = sum(float(x) for x in vram_result.stdout.split()) * 1024**2 / 1e9
-                except Exception:
-                    pass
+            vram_gb = _probe_nvidia_vram_gb(ssh_base) if gpu_arch == 'nvidia' else 0.0
         return {'ram_gb': round(ram_gb, 1), 'vram_gb': round(vram_gb, 1), 'live': True}
     except Exception:
         return {'ram_gb': 0.0, 'vram_gb': 0.0, 'live': False}
@@ -630,7 +651,7 @@ def ollama_chat(model: str, messages: list, timeout: int = 300) -> dict:
 # ── Scheduler ──────────────────────────────────────────────────────────────────
 
 def scheduler_loop():
-    print('[scheduler] Started')
+    logger.info('[scheduler] Started')
     while True:
         now = datetime.datetime.now()
         time.sleep(60 - now.second + 0.5)
@@ -638,7 +659,7 @@ def scheduler_loop():
         try:
           _scheduler_tick(now)
         except Exception as e:
-            print(f'[scheduler] tick error (will retry next minute): {e}')
+            logger.error(f'[scheduler] tick error (will retry next minute): {e}')
 
 def _scheduler_tick(now):
     with get_db() as db:
@@ -662,7 +683,7 @@ def _scheduler_tick(now):
             continue
 
         name = task.get('name', task.get('id', '?'))
-        print(f'[scheduler] Running: {name}')
+        logger.info(f'[scheduler] Running: {name}')
 
         prompt = resolve_template(task.get('prompt_template', ''), now)
         model  = task.get('model', '')
@@ -688,7 +709,7 @@ def _scheduler_tick(now):
         msgs.append({'role': 'user', 'content': prompt})
         result = ollama_chat(model, msgs)
         status = 'error' if result['error'] else 'ok'
-        print(f'[scheduler] {name} → {status}')
+        logger.info(f'[scheduler] {name} → {status}')
 
         run_id = str(time.time_ns())
         with get_db() as db:
@@ -1186,7 +1207,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             row = db.execute('SELECT ip, ssh_user, os, mac FROM network_hosts WHERE id=?', (id,)).fetchone()
         if not row:
             return self.send_error(404)
-        ok, error = check_ssh_access(row['ip'], row['ssh_user'])
+        if row['ip'] in local_ips():
+            # This host entry is the machine server.py runs on — no SSH
+            # needed (and self-SSH is rarely set up for passwordless
+            # BatchMode auth), same bypass probe_host_sysinfo/fetch_mac
+            # already use for self.
+            ok, error = True, None
+        else:
+            ok, error = check_ssh_access(row['ip'], row['ssh_user'])
         mac = None
         if ok and not row['mac']:
             mac = fetch_mac(row['ip'], row['ssh_user'], row['os'])
@@ -2711,17 +2739,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             return self._json({'query': q, 'models': [], 'error': str(e)}, 502)
         models = []
-        for card in re.findall(r'<li x-test-model.*?</li>', html, re.DOTALL):
-            name = re.search(r'x-test-search-response-title>([^<]+)<', card)
+        for card in re.findall(r'<li\s+class="flex items-baseline border-b border-neutral-200 py-6">.*?</li>', html, re.DOTALL):
+            name = re.search(r'href="/library/([^"]+)"', card)
             if not name:
                 continue
             desc  = re.search(r'<p class="max-w-lg break-words[^"]*">(.*?)</p>', card, re.DOTALL)
-            pulls = re.search(r'x-test-pull-count>([^<]+)<', card)
+            pulls = re.search(r'<span >([\d.]+[MK]?)</span>\s*<span class="hidden sm:flex">&nbsp;Pulls</span>', card)
             models.append({
                 'name':         name.group(1).strip(),
                 'description':  re.sub(r'<[^>]+>', '', desc.group(1)).strip() if desc else '',
-                'sizes':        [s.strip() for s in re.findall(r'x-test-size[^>]*>([^<]+)<', card)],
-                'capabilities': [c.strip() for c in re.findall(r'x-test-capability[^>]*>([^<]+)<', card)],
+                'sizes':        [s.strip() for s in re.findall(r'bg-\[#ddf4ff\][^>]*>([^<]+)<', card)],
+                'capabilities': [c.strip() for c in re.findall(r'bg-indigo-50[^>]*>([^<]+)<', card)],
                 'pulls':        pulls.group(1).strip() if pulls else '',
             })
         self._json({'query': q, 'page': int(page or 1), 'models': models})
@@ -2826,7 +2854,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     pass  # drain; success = reaching EOF without an exception
             return True
         except Exception as e:
-            print(f'[skills] embedding model pull failed: {e}')
+            logger.error(f'[skills] embedding model pull failed: {e}')
             return False
 
     def _ensure_skill_embedding(self, name, description, triggers):
@@ -2844,7 +2872,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         try:
             embedding, embed_model = self._embed_text(text, host_id)
         except Exception as e:
-            print(f'[skills] embedding compute failed: {e}')
+            logger.error(f'[skills] embedding compute failed: {e}')
             return None, None
         return (json.dumps(embedding) if embedding else None), embed_model
 
@@ -2860,16 +2888,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _fs_safe(self, rel, root=None):
         if root is None:
             root = self._fs_root()
-        # Check containment on the lexical (un-resolved) path so a symlink anywhere under home
-        # (e.g. ~/library pointing at a mounted drive) is allowed to point outside home; only
+        # Check containment on the lexical (un-resolved) path so a symlink anywhere under the
+        # workspace root (e.g. pointing at a mounted drive) is allowed to point elsewhere; only
         # collapse '..' components (no filesystem/symlink access) before the containment check.
+        # Containment is against the configured workspace root, not $HOME — the workspace root
+        # itself may legitimately live outside home (e.g. a separate mounted drive).
         candidate = Path(rel) if str(rel).startswith('/') else (root / rel)
         candidate = Path(os.path.normpath(str(candidate)))
-        home = Path.home()
         try:
-            candidate.relative_to(os.path.normpath(str(home)))
+            candidate.relative_to(os.path.normpath(str(root)))
         except ValueError:
-            raise PermissionError(f'Path outside home directory: {candidate}')
+            raise PermissionError(f'Path outside workspace root: {candidate}')
         return candidate.resolve()
 
     def _fs_list(self):
@@ -2965,8 +2994,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         now = datetime.datetime.now().isoformat()
         root_path = body.get('rootPath') or str(Path.home())
         if body.get('rootPath'):
+            # Picking a new workspace root isn't contained by the *current* root — it's
+            # the operation that redefines the sandbox boundary itself, so just resolve it.
             try:
-                p = self._fs_safe(body['rootPath'])
+                p = Path(os.path.normpath(os.path.expanduser(body['rootPath']))).resolve()
             except Exception as e:
                 return self._json({'error': str(e)}, 400)
             if not p.is_dir():
@@ -3083,10 +3114,10 @@ if __name__ == '__main__':
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(certfile=str(CERT_FILE), keyfile=str(KEY_FILE))
             srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
-            print(f'Ollama UI  →  https://localhost:{PORT}')
+            logger.info(f'Ollama UI  →  https://localhost:{PORT}')
         else:
-            print(f'Ollama UI  →  http://localhost:{PORT}')
+            logger.info(f'Ollama UI  →  http://localhost:{PORT}')
         try:
             srv.serve_forever()
         except KeyboardInterrupt:
-            print('\n[server] Stopped')
+            logger.info('[server] Stopped')

@@ -41,7 +41,9 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     <div class="code-chat-window"></div>
     <div class="code-chat-bar">
       <div class="spin-wrap"><textarea class="code-chat-input" placeholder="Ask about the code…" rows="1"></textarea></div>
-      <button class="code-send-btn">Send</button>
+      <button class="code-send-btn send-btn" title="Send">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+      </button>
     </div>`;
 
   const modelSelect = bodyEl.querySelector('.code-model-select');
@@ -131,13 +133,40 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
   const history = [];
 
   function appendBubble(role, content) {
-    const div = document.createElement('div');
-    div.className = `message ${role}`;
-    div.innerHTML = role === 'user' ? `<p>${escHtml(content)}</p>` : marked.parse(content);
-    chatWindow.appendChild(div);
+    const wrap = document.createElement('div');
+    wrap.className = `message ${role}`;
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    if (role === 'assistant') {
+      const rd = document.createElement('div');
+      rd.className = 'response-content';
+      rd.innerHTML = marked.parse(content);
+      bubble.appendChild(rd);
+    } else {
+      bubble.textContent = content;
+    }
+    wrap.appendChild(bubble);
+    wrap.appendChild(buildMeta(role, content, null));
+    if (role === 'assistant') wrap.appendChild(buildBrandMark());
+    chatWindow.appendChild(wrap);
     chatWindow.scrollTop = chatWindow.scrollHeight;
-    if (role === 'assistant') div.querySelectorAll('pre code').forEach(b => Prism.highlightElement(b));
-    return div;
+    if (role === 'assistant') bubble.querySelectorAll('pre code').forEach(b => Prism.highlightElement(b));
+    return bubble;
+  }
+
+  function createAssistantBubble() {
+    const wrap = document.createElement('div');
+    wrap.className = 'message assistant';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    const rd = document.createElement('div');
+    rd.className = 'response-content';
+    rd.innerHTML = marked.parse('▋');
+    bubble.appendChild(rd);
+    wrap.appendChild(bubble);
+    chatWindow.appendChild(wrap);
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+    return { wrap, rd };
   }
 
   function renderAskUserCard(params) {
@@ -231,34 +260,32 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     if (sysMsg) apiMessages.push({ role: 'system', content: sysMsg });
     apiMessages.push(...history);
 
-    let assistantDiv = null;
+    const { wrap: assistantWrap, rd: assistantEl } = createAssistantBubble();
+    let fullText = '';
     try {
       let looping = true;
       while (looping) {
         looping = false;
-        let fullText = '';
+        fullText = '';
         let turnToolCalls = null;
-        assistantDiv = appendBubble('assistant', '▋');
+        assistantEl.innerHTML = marked.parse('▋');
         for await (const chunk of aiProvider.chat({ messages: apiMessages, model, tools })) {
           if (typeof chunk === 'string') {
             fullText += chunk;
-            assistantDiv.innerHTML = marked.parse(fullText + ' ▋');
+            assistantEl.innerHTML = marked.parse(fullText + ' ▋');
             chatWindow.scrollTop = chatWindow.scrollHeight;
           } else if (chunk?.toolCalls) {
             turnToolCalls = chunk.toolCalls;
           }
         }
-        if (fullText) {
-          assistantDiv.innerHTML = marked.parse(fullText);
-          assistantDiv.querySelectorAll('pre code').forEach(b => Prism.highlightElement(b));
-        } else {
-          assistantDiv.remove();
-        }
         if (turnToolCalls?.length) {
           apiMessages.push({ role: 'assistant', content: '', tool_calls: turnToolCalls });
           if (fullText) history.push({ role: 'assistant', content: fullText });
-          for (const tc of turnToolCalls) {
+          const toolWrap = renderToolCallBubble(chatWindow, turnToolCalls);
+          for (let i = 0; i < turnToolCalls.length; i++) {
+            const tc = turnToolCalls[i];
             const result = await executeCodeTool(tc.function.name, tc.function.arguments ?? {});
+            renderToolResultBubble(toolWrap, i, result);
             apiMessages.push({ role: 'tool', content: String(result) });
           }
           looping = true;
@@ -268,15 +295,21 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
           skillPicker.value = '';
         }
       }
-    } catch (err) {
-      if (assistantDiv) {
-        assistantDiv.innerHTML = marked.parse(`*Error: ${err?.message || 'request failed'}*`);
+      if (fullText) {
+        assistantEl.innerHTML = marked.parse(fullText);
+        assistantEl.querySelectorAll('pre code').forEach(b => Prism.highlightElement(b));
       } else {
-        appendBubble('assistant', `*Error: ${err?.message || 'request failed'}*`);
+        assistantWrap.remove();
       }
+    } catch (err) {
+      assistantEl.innerHTML = marked.parse(`*Error: ${err?.message || 'request failed'}*`);
     } finally {
       busy = false;
       sendBtn.disabled = false;
+    }
+    if (assistantWrap.isConnected) {
+      assistantWrap.appendChild(buildMeta('assistant', fullText, null));
+      assistantWrap.appendChild(buildBrandMark());
     }
   }
 

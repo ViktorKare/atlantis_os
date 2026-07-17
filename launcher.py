@@ -5,6 +5,11 @@ Control mode: python3 launcher.py --start | --stop | --restart
 import json, os, shutil, signal, socket, subprocess, sys, time
 from pathlib import Path
 
+from logging_setup import setup_logging, install_crash_handler
+
+logger = setup_logging('launcher')
+install_crash_handler('launcher', logger)
+
 ROOT_DIR     = Path(__file__).parent
 DATA_DIR     = ROOT_DIR / 'data'
 CONFIG_FILE  = ROOT_DIR / 'atlantis.config.json'
@@ -91,6 +96,7 @@ def start_children():
     if sys.platform.startswith('linux') and OLLAMA_BIN.exists() and not port_open('127.0.0.1', 11434):
         env = dict(os.environ)
         env['OLLAMA_MODELS'] = str(OLLAMA_DIR / 'models')
+        env['OLLAMA_ORIGINS'] = '*'
         _children['ollama'] = subprocess.Popen(
             [str(OLLAMA_BIN), 'serve'], stdout=log, stderr=log, env=env)
     if sys.platform != 'win32':
@@ -130,6 +136,7 @@ def restart_dead_children():
             elif name == 'ollama':
                 env = dict(os.environ)
                 env['OLLAMA_MODELS'] = str(OLLAMA_DIR / 'models')
+                env['OLLAMA_ORIGINS'] = '*'
                 _children[name] = subprocess.Popen(
                     [str(OLLAMA_BIN), 'serve'], stdout=log, stderr=log, env=env)
             elif name == 'code_server':
@@ -141,7 +148,7 @@ def restart_dead_children():
 def run_supervisor():
     existing = read_pid()
     if existing and is_alive(existing):
-        print(f'Supervisor already running (pid {existing}).')
+        logger.info(f'Supervisor already running (pid {existing}).')
         return
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(os.getpid()))
@@ -189,26 +196,26 @@ def control(mode):
     if mode == 'stop':
         if alive:
             STOP_FLAG.touch()
-            print('Stop requested.')
+            logger.info('Stop requested.')
         else:
-            print('Not running.')
+            logger.info('Not running.')
     elif mode == 'restart':
         if alive:
             RESTART_FLAG.touch()
-            print('Restart requested.')
+            logger.info('Restart requested.')
         else:
             spawn_detached([sys.executable, str(ROOT_DIR / 'launcher.py')])
-            print(f'Not running — starting fresh. Open http://localhost:{config_port()}')
+            logger.info(f'Not running — starting fresh. Open http://localhost:{config_port()}')
     elif mode == 'start':
         if alive:
             if port_open('127.0.0.1', config_port()):
-                print('Already running.')
+                logger.info('Already running.')
             else:
                 RESTART_FLAG.touch()
-                print(f'Supervisor was running but stopped — restarting children. Open http://localhost:{config_port()}')
+                logger.info(f'Supervisor was running but stopped — restarting children. Open http://localhost:{config_port()}')
         else:
             spawn_detached([sys.executable, str(ROOT_DIR / 'launcher.py')])
-            print(f'Started. Open http://localhost:{config_port()}')
+            logger.info(f'Started. Open http://localhost:{config_port()}')
 
 
 if __name__ == '__main__':

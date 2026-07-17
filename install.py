@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Atlantis OS — first-time setup wizard. Run with: python3 install.py"""
-import json, platform, shutil, socket, subprocess, sys, tarfile, tempfile, time, urllib.request, zipfile
+import json, os, platform, shutil, socket, subprocess, sys, tarfile, tempfile, time, urllib.request, zipfile
 from pathlib import Path
 
 ROOT_DIR    = Path(__file__).parent
@@ -149,6 +149,43 @@ def setup_code_server(os_name):
         print('code-server install script finished but binary not found at the expected path — check data/code-server/ manually.')
 
 
+def configure_ollama_origins_macos():
+    """Same origin-allowlist issue as configure_ollama_origins_windows(), but
+    Ollama.app is a GUI app with its own login-item autostart outside
+    Atlantis's control — a shell profile env var wouldn't reach it, since GUI
+    apps inherit their environment from the user's launchd session instead.
+    `launchctl setenv` fixes that for the current session; the LaunchAgent
+    reapplies it at every login so it survives a reboot."""
+    try:
+        subprocess.run(['launchctl', 'setenv', 'OLLAMA_ORIGINS', '*'], check=True, capture_output=True)
+    except Exception as e:
+        print(f'Could not set OLLAMA_ORIGINS for this session: {e}')
+    label = 'com.atlantis.ollama-origins'
+    plist_dir = Path.home() / 'Library' / 'LaunchAgents'
+    plist_dir.mkdir(parents=True, exist_ok=True)
+    plist_path = plist_dir / f'{label}.plist'
+    plist_path.write_text(f'''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/launchctl</string>
+        <string>setenv</string>
+        <string>OLLAMA_ORIGINS</string>
+        <string>*</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+</dict>
+</plist>
+''')
+    try:
+        subprocess.run(['launchctl', 'load', str(plist_path)], capture_output=True)
+    except Exception:
+        pass
+
+
 def install_ollama_macos():
     print('Downloading Ollama for macOS...')
     with tempfile.TemporaryDirectory() as tmp:
@@ -163,6 +200,24 @@ def install_ollama_macos():
             shutil.rmtree(app_dest)
         shutil.move(str(Path(tmp) / 'Ollama.app'), str(app_dest))
         subprocess.Popen(['open', str(app_dest)])
+
+
+def configure_ollama_origins_windows():
+    """Ollama's default origin allowlist 403s any request carrying a
+    browser Origin header. Atlantis's Chat tab talks to Ollama directly
+    from the browser rather than proxying through server.py (see
+    resolve_ollama_endpoint() in server/server.py), so without this a
+    Windows host's models are visible in the Models tab (server-side
+    fetch, no Origin header) but silently never win the Chat "auto" host
+    race. os.environ covers the installer's own child processes (e.g.
+    Ollama auto-launched right after a silent install) for this session;
+    setx persists it to HKCU\\Environment for future logins."""
+    os.environ['OLLAMA_ORIGINS'] = '*'
+    try:
+        subprocess.run(['setx', 'OLLAMA_ORIGINS', '*'], check=True, capture_output=True)
+    except Exception as e:
+        print(f"Could not persist OLLAMA_ORIGINS: {e}. Other machines' Chat tabs may not "
+              f"see this host's models until it's set manually.")
 
 
 def install_ollama_windows():
@@ -197,8 +252,16 @@ def install_ollama_linux_tarball():
 
 
 def setup_ollama(os_name):
+    if os_name == 'windows':
+        configure_ollama_origins_windows()
+    elif os_name == 'macos':
+        configure_ollama_origins_macos()
     if ollama_responds():
         print('Ollama is already running — skipping install.')
+        if os_name in ('windows', 'macos'):
+            print('OLLAMA_ORIGINS is now set, but only new Ollama processes pick it up — '
+                  'quit Ollama from the menu bar / tray icon and relaunch it for other '
+                  "machines' Chat tabs to see this host's models.")
         return
     if os_name == 'macos':
         if (Path('/Applications/Ollama.app').exists() or (Path.home() / 'Applications' / 'Ollama.app').exists()):

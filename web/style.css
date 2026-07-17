@@ -376,7 +376,7 @@ body::before {
 #sidebar button:hover,
 .section-sidebar > button:hover { filter: brightness(1.1); box-shadow: var(--glow-accent); }
 
-#thread-list, #agent-list, #task-list, #plan-list {
+#thread-list, #agent-list, #task-list, #plan-list, #skill-list {
   list-style: none;
   overflow-y: auto;
   flex: 1;
@@ -426,8 +426,8 @@ body::before {
 #thread-list li:hover .thread-delete { opacity: 1; }
 #thread-list .thread-delete:hover { color: var(--danger); }
 
-/* Agent / task list items (two lines: name + subtitle) */
-#agent-list li, #task-list li {
+/* Agent / task / skill list items (two lines: name + subtitle) */
+#agent-list li, #task-list li, #skill-list li {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -436,8 +436,8 @@ body::before {
   cursor: pointer;
   margin-bottom: 2px;
 }
-#agent-list li:hover, #task-list li:hover { background: var(--bg3); }
-#agent-list li.active, #task-list li.active { background: var(--bg3); }
+#agent-list li:hover, #task-list li:hover, #skill-list li:hover { background: var(--bg3); }
+#agent-list li.active, #task-list li.active, #skill-list li.active { background: var(--bg3); }
 
 .item-name {
   font-size: 13px;
@@ -448,8 +448,10 @@ body::before {
 }
 #agent-list li.active .item-name,
 #task-list li.active .item-name,
+#skill-list li.active .item-name,
 #agent-list li:hover .item-name,
-#task-list li:hover .item-name { color: var(--text); }
+#task-list li:hover .item-name,
+#skill-list li:hover .item-name { color: var(--text); }
 
 .item-sub {
   font-size: 11px;
@@ -861,6 +863,17 @@ body::before {
 
 .editor-field {
   margin-bottom: 18px;
+}
+
+.editor-section-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  padding-top: 14px;
+  margin-bottom: 14px;
+  border-top: 1px solid var(--border);
 }
 
 .editor-field label {
@@ -3554,10 +3567,10 @@ button:not(:disabled):active {
   animation: listItemPulse 3.4s ease-in-out infinite;
 }
 
-#agent-list li, #task-list li {
+#agent-list li, #task-list li, #skill-list li {
   transition: background 0.18s, color 0.18s;
 }
-#agent-list li.active, #task-list li.active {
+#agent-list li.active, #task-list li.active, #skill-list li.active {
   animation: listItemPulse 3.4s ease-in-out infinite;
 }
 
@@ -4056,7 +4069,10 @@ button:not(:disabled):active {
   border-radius: 8px;
   padding: 12px 14px;
   background: var(--surface);
+  cursor: pointer;
+  transition: border-color 0.15s;
 }
+.roster-card:hover { border-color: var(--accent); }
 .roster-card-name { font-weight: 600; color: var(--text); }
 .roster-card-role { font-size: 12px; color: var(--accent); margin-top: 2px; }
 .roster-card-goal { font-size: 12px; color: var(--text-dim); margin-top: 6px; line-height: 1.5; }
@@ -4095,3 +4111,15 @@ button:not(:disabled):active {
   text-align: center;
   padding: 4px 0;
 }
+
+.turn-feedback { border-color: rgba(86,182,194,.35); background: rgba(14, 34, 42, 0.45); }
+.turn-feedback-title { color: #56b6c2; font-weight: 600; font-size: 12px; margin-bottom: 10px; }
+.turn-feedback-row { display: flex; align-items: flex-end; gap: 8px; }
+.turn-feedback-input {
+  min-height: 34px;
+  max-height: 120px;
+  padding: 7px 10px;
+  line-height: 1.4;
+  overflow-y: auto;
+}
+.turn-feedback-actions { display: flex; justify-content: flex-end; margin-top: 8px; }

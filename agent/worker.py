@@ -11,6 +11,11 @@ BASE_DIR = Path(__file__).parent          # agent/
 DB_FILE  = BASE_DIR.parent / 'data' / 'data.db'
 RUNNING  = True
 
+sys.path.insert(0, str(BASE_DIR.parent))
+from logging_setup import setup_logging, install_crash_handler
+logger = setup_logging('worker')
+install_crash_handler('worker', logger)
+
 # ── DB ────────────────────────────────────────────────────────────────────────
 
 def get_db():
@@ -676,6 +681,7 @@ def parse_orchestrator_decision(raw, roster_ids):
 def ask_orchestrator(pipeline, roster_agents, turns, workspace_diff, router, cfg, base_ctx, pm_model, pm_tier):
     roster_ids = {a['id'] for a in roster_agents}
     msgs = build_orchestrator_prompt(pipeline, roster_agents, turns, workspace_diff)
+    last_err = None
     for _ in range(3):
         provider, model, cred = resolve_llm(pm_tier, msgs, router, cfg, pm_model)
         if provider == 'anthropic':
@@ -683,6 +689,7 @@ def ask_orchestrator(pipeline, roster_agents, turns, workspace_diff, router, cfg
         else:
             raw, err = ollama_once(cred, model, msgs, num_ctx=base_ctx)
         if not raw:
+            last_err = err or 'empty response'
             msgs = msgs + [{'role': 'user', 'content':
                             f'Your previous response failed: {err or "empty response"}. '
                             f'Try again — respond ONLY with the JSON decision.'}]
@@ -690,10 +697,11 @@ def ask_orchestrator(pipeline, roster_agents, turns, workspace_diff, router, cfg
         decision, val_err = parse_orchestrator_decision(raw, roster_ids)
         if decision is not None:
             return decision, None
+        last_err = val_err
         msgs = msgs + [{'role': 'user', 'content':
                         f'Your previous response was invalid: {val_err}. '
                         f'Try again — respond ONLY with the JSON decision.'}]
-    return None, 'orchestrator failed to produce a valid decision after 3 attempts'
+    return None, f'orchestrator failed to produce a valid decision after 3 attempts (last error: {last_err})'
 
 def run_verification(pipeline, roster_agents, work_root, run_llm_fn, turn_index):
     """Returns (status, output, tier). Tier 1 = real command, tier 2 = QA-role
@@ -1176,7 +1184,7 @@ def execute_job(job):
             if pm_agent and not pm_model:
                 pm_model = pm_agent.get('model', '')
         if not pm_model:
-            pm_model = next((a['model'] for a in all_agents if a.get('model')), 'llama3.1:8b')
+            pm_model = cfg.get('pipelineManagerModel') or cfg.get('homeModel') or 'llama3.1:8b'
 
         if pipeline.get('mode') == 'dynamic':
             execute_dynamic_job(job, pipeline, all_agents, cfg, router, base_ctx, pm_model, pm_tier)
@@ -2012,13 +2020,13 @@ def execute_dynamic_job(job, pipeline, all_agents, cfg, router, base_ctx, pm_mod
 
 def handle_signal(sig, frame):
     global RUNNING
-    print('\nWorker shutting down…')
+    logger.info('Worker shutting down…')
     RUNNING = False
 
 def main():
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT,  handle_signal)
-    print(f'Atlantis OS Worker — watching {DB_FILE}')
+    logger.info(f'Atlantis OS Worker — watching {DB_FILE}')
     with db_session() as db:
         db.execute("UPDATE jobs SET status='failed', error='Worker restarted while job was running' WHERE status='running'")
         db.execute("UPDATE jobs SET status='cancelled', error='Worker restarted while job was cancelling' WHERE status='cancelling'")
@@ -2027,14 +2035,14 @@ def main():
     while RUNNING:
         job = claim_job()
         if job:
-            print(f'[{datetime.datetime.now().strftime("%H:%M:%S")}] Running job {job["id"]} (pipeline {job["pipeline_id"]})')
+            logger.info(f'Running job {job["id"]} (pipeline {job["pipeline_id"]})')
             try:
                 execute_job(job)
             finally:
                 browser_close()   # don't leak the headless browser between jobs
         else:
             time.sleep(2)
-    print('Worker stopped.')
+    logger.info('Worker stopped.')
 
 if __name__ == '__main__':
     main()

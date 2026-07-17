@@ -496,21 +496,19 @@ function renderAgentEditor(agent) {
         </div>
         <div class="editor-hint">Sent as Ollama <code>tools</code> array — model can call these directly without action blocks. Works with llama3.1, qwen2.5, mistral-nemo, etc. Shell runs real bash commands; Browser drives headless Chromium — grant with care.</div>
       </div>
-      <details class="editor-details">
-        <summary>Dynamic pipeline role <span class="label-hint">(only used when this agent is added to a dynamic pipeline's roster)</span></summary>
-        <div class="editor-field">
-          <label>Role</label>
-          <input type="text" id="agent-role" value="${escHtml(agent.role || '')}" placeholder="e.g. planner, developer, QA reviewer">
-        </div>
-        <div class="editor-field">
-          <label>Goal</label>
-          <textarea id="agent-goal" rows="2" placeholder="What this agent is responsible for, kept narrow so the orchestrator can enforce scope">${escHtml(agent.agentGoal || '')}</textarea>
-        </div>
-        <div class="editor-field">
-          <label>Expected output</label>
-          <textarea id="agent-expected-output" rows="2" placeholder="The shape of what this agent should hand back, e.g. a numbered task list">${escHtml(agent.expectedOutput || '')}</textarea>
-        </div>
-      </details>
+      <div class="editor-section-label">Dynamic pipeline role <span class="label-hint">(only used when this agent is added to a dynamic pipeline's roster)</span></div>
+      <div class="editor-field">
+        <label>Role</label>
+        <input type="text" id="agent-role" value="${escHtml(agent.role || '')}" placeholder="e.g. planner, developer, QA reviewer">
+      </div>
+      <div class="editor-field">
+        <label>Goal</label>
+        <textarea id="agent-goal" rows="2" placeholder="What this agent is responsible for, kept narrow so the orchestrator can enforce scope">${escHtml(agent.agentGoal || '')}</textarea>
+      </div>
+      <div class="editor-field">
+        <label>Expected output</label>
+        <textarea id="agent-expected-output" rows="2" placeholder="The shape of what this agent should hand back, e.g. a numbered task list">${escHtml(agent.expectedOutput || '')}</textarea>
+      </div>
       <div class="editor-actions">
         <button id="delete-agent-btn" class="btn-danger">Delete</button>
         <button id="save-agent-btn" class="btn-primary">Save agent</button>
@@ -1209,22 +1207,43 @@ async function load() {
 }
 
 // ── Chat — models ─────────────────────────────────────────────────────────────
+// Polled every MODELS_POLL_MS to match resolveOllama()'s 20s host cache, so
+// the dropdown catches an "auto" host coming online/offline after page load
+// without needing a manual reload.
+const MODELS_POLL_MS = 20000;
+let modelsUnreachable = false;
 async function fetchModels() {
   try {
     const res  = await fetch(`${await resolveOllama()}/api/tags`);
     const data = await res.json();
-    models = (data.models || []).map(m => m.name);
-    modelSelect.innerHTML = models.length
-      ? models.map(n => `<option value="${n}">${n}</option>`).join('')
-      : '<option value="">No models found</option>';
-    if (state.model && models.includes(state.model)) {
-      modelSelect.value = state.model;
-    } else {
-      state.model = models[0] || '';
+    const fetched = (data.models || []).map(m => m.name);
+    const changed = modelsUnreachable ||
+      fetched.length !== models.length || fetched.some((n, i) => n !== models[i]);
+    models = fetched;
+    modelsUnreachable = false;
+    // Only touch the DOM when the list actually changed — an unchanged poll
+    // must never disturb whatever the user currently has selected.
+    if (changed) {
+      modelSelect.innerHTML = models.length
+        ? models.map(n => `<option value="${n}">${n}</option>`).join('')
+        : '<option value="">No models found</option>';
+      if (state.model && models.includes(state.model)) {
+        modelSelect.value = state.model;
+      } else {
+        state.model = models[0] || '';
+        modelSelect.value = state.model;
+      }
     }
   } catch {
-    modelSelect.innerHTML = '<option value="">Could not reach Ollama</option>';
+    if (!modelsUnreachable) {
+      modelsUnreachable = true;
+      models = [];
+      modelSelect.innerHTML = '<option value="">Could not reach Ollama</option>';
+    }
   }
+}
+function startModelsPolling() {
+  setInterval(fetchModels, MODELS_POLL_MS);
 }
 
 // ── Chat — threads ────────────────────────────────────────────────────────────
@@ -3142,14 +3161,23 @@ function renderPipeRosterView() {
   if (!el || !activePipe) return;
   const roster = (activePipe.roster || []).map(id => agents.find(a => a.id === id)).filter(Boolean);
   el.innerHTML = roster.length ? `
-    <div class="pipe-empty-hint">Dynamic pipeline — an orchestrator decides which roster agent acts each turn. Edit the roster and goal in ⚙ Pipeline settings.</div>
+    <div class="pipe-empty-hint">Dynamic pipeline — an orchestrator decides which roster agent acts each turn. Add or remove roster agents in ⚙ Pipeline settings; click a card below to edit that agent's role in the Agents tab.</div>
     <div class="roster-cards">${roster.map(a => `
-      <div class="roster-card">
+      <div class="roster-card" data-agent-id="${a.id}" title="Edit ${escHtml(a.name)} in the Agents tab">
         <div class="roster-card-name">${escHtml(a.name)}</div>
-        <div class="roster-card-role">${escHtml(a.role || '(no role set)')}</div>
+        <div class="roster-card-role">${escHtml(a.role || '(no role set — click to set it)')}</div>
         ${a.agentGoal ? `<div class="roster-card-goal">${escHtml(a.agentGoal)}</div>` : ''}
       </div>`).join('')}</div>`
     : '<div class="pipe-empty-hint">No agents in the roster yet. Open ⚙ Pipeline settings to add some.</div>';
+  el.querySelectorAll('.roster-card').forEach(card => {
+    card.addEventListener('click', () => openAgentInEditor(card.dataset.agentId));
+  });
+}
+
+function openAgentInEditor(agentId) {
+  activeAgentId = agentId;
+  switchSection('agents');
+  renderAgentEditor(agents.find(a => a.id === agentId) || null);
 }
 
 function turnCardId(i) { return `turn-card-${i}`; }
@@ -3488,9 +3516,9 @@ function buildPipeSettingsHtml() {
         <option value="dynamic"${mode==='dynamic'?' selected':''}>Dynamic — orchestrator decides each turn</option>
       </select>
     </div>
+    <div class="detail-field"><label>PM Agent <span class="label-hint">${mode==='dynamic'?'the orchestrator\'s own brain — leave unset to fall back to the default model' : 'reviews each step; leave unset to pick a model directly below'}</span></label><select id="pd-pm-agent"><option value="">— model only —</option>${agOpts}</select></div>
+    <div class="detail-field"><label>PM Model</label><select id="pd-pm-model"><option value="">— pick model —</option>${mdOpts}</select></div>
     <div id="pd-fixed-fields" style="display:${mode==='fixed'?'block':'none'}">
-      <div class="detail-field"><label>PM Agent</label><select id="pd-pm-agent"><option value="">— model only —</option>${agOpts}</select></div>
-      <div class="detail-field"><label>PM Model</label><select id="pd-pm-model"><option value="">— pick model —</option>${mdOpts}</select></div>
       <div class="detail-field toggle-field"><label>Pause on QA fail</label><input type="checkbox" id="pd-pause"${p.pauseOnFail?' checked':''}></div>
     </div>
     <div id="pd-dynamic-fields" style="display:${mode==='dynamic'?'block':'none'}">
@@ -3530,10 +3558,10 @@ function bindPipeSettings() {
       name: document.getElementById('pd-name').value.trim() || 'Pipeline',
       goal: document.getElementById('pd-goal').value,
       mode,
+      pmAgentId: document.getElementById('pd-pm-agent').value || null,
+      pmModel:   document.getElementById('pd-pm-model').value,
     };
     if (mode === 'fixed') {
-      updates.pmAgentId   = document.getElementById('pd-pm-agent').value || null;
-      updates.pmModel     = document.getElementById('pd-pm-model').value;
       updates.pauseOnFail = document.getElementById('pd-pause').checked;
     } else {
       updates.roster       = [...document.querySelectorAll('#pd-roster input:checked')].map(el => el.value);
@@ -3633,7 +3661,8 @@ async function approveRun(runId, formEl) {
   formEl?.remove();
   pipeAwaitingRunId = null;
   setFeedbackNodeStatus('done');
-  appendThinkEntry('think-run-done', '✓ Approved — feedback loop closed');
+  if (activePipe?.mode === 'dynamic') appendTurnFeedNote('✓ Approved — feedback loop closed');
+  else appendThinkEntry('think-run-done', '✓ Approved — feedback loop closed');
   closePipeDetail();
   refreshPipeRuns();
 }
@@ -4077,6 +4106,30 @@ function stopPipeRun() {
 }
 
 function appendFeedbackForm(runId) {
+  if (activePipe?.mode === 'dynamic') {
+    const feed = document.getElementById('pipe-turn-feed');
+    if (!feed) return;
+    feed.querySelector('.pipe-empty-hint')?.remove();
+    const div = document.createElement('div');
+    div.className = 'turn-card turn-feedback';
+    div.innerHTML = `
+      <div class="turn-feedback-title">⟲ Run complete — review it. Feedback loops the whole run back to the start.</div>
+      <div class="turn-feedback-row">
+        <div class="spin-wrap"><textarea class="turn-feedback-input" rows="1" placeholder="What should change? e.g. the export link is broken — fix it"></textarea></div>
+        <button class="turn-feedback-send send-btn" title="Send &amp; re-run">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h17M13 5l7 7-7 7"/></svg>
+        </button>
+      </div>
+      <div class="turn-feedback-actions">
+        <button class="btn-sm turn-feedback-approve">✓ Approve</button>
+      </div>`;
+    div.querySelector('.turn-feedback-send').addEventListener('click', () =>
+      submitRunFeedback(runId, div.querySelector('.turn-feedback-input').value, div));
+    div.querySelector('.turn-feedback-approve').addEventListener('click', () => approveRun(runId, div));
+    feed.appendChild(div);
+    logAutoScroll('pipe-turn-feed');
+    return;
+  }
   const log = document.getElementById('pipe-think-log');
   if (!log) return;
   const div = document.createElement('div');
@@ -4947,6 +5000,7 @@ async function init() {
   await Promise.all([loadSettings(), loadAgents(), loadSkills(), loadTasks(), load(), loadHosts()]);
   maybeShowWelcomeOverlay();
   await fetchModels();
+  startModelsPolling();
   refreshAgentDropdown();
   refreshSkillDropdown();
   // Restore last active thread's model/agent

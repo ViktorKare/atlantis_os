@@ -380,17 +380,7 @@
   max-height: 120px;
   overflow-y: auto;
 }
-.code-send-btn {
-  padding: 10px 14px;
-  background: var(--grad-accent);
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  font-size: 13px;
-  cursor: pointer;
-  align-self: flex-end;
-}
-.code-send-btn:disabled { opacity: 0.5; cursor: default; }
+.code-send-btn { align-self: flex-end; }
 
 /* ── Editor pane tabs + tree pane internals ──────────────────────────── */
 /* .code-tabs, .code-tab, .code-tab-name, .code-tab-close, .tree-list,
