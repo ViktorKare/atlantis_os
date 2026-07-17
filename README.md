@@ -50,7 +50,7 @@ Browse and install models straight from the Ollama library, with RAM/VRAM-aware 
 ### Host models across your network
 Point Atlantis at Ollama instances on other machines on your LAN and route work to whichever host is available — turn your home network into a shared model pool.
 
-![Host models on local network](assets/host-models-on-local-network.png)
+![Host models on local network](assets/host-models-on-local-net.png)
 
 ---
 
