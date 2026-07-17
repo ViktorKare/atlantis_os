@@ -571,7 +571,7 @@ POST /api/system/stop       no body → {ok: true}
 
   network_hosts     id, name, ip, mac, ollama_port, priority, enabled, created_at,
                     os (macos|linux|windows, nullable), gpu_arch (nvidia|apple_silicon|
-                    amd|cpu_only, nullable), ssh_user (default 'viktor')
+                    amd|cpu_only, nullable), ssh_user
 
 ### Model router (stored in settings as model_router JSON)
 
