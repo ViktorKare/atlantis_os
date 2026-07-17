@@ -8,6 +8,7 @@ __pycache__/
 graphify-out/
 .claude/
 .github/
+CLAUDE.md
 .worktrees/
 .superpowers/
 data/*
