@@ -782,6 +782,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(WEB_DIR), **kwargs)
 
+    def end_headers(self):
+        # No Cache-Control was ever sent, so browsers could silently serve a
+        # stale app.js/style.css after an update with no way to tell short of
+        # a hard refresh (bit us directly during development). no-cache still
+        # allows conditional GETs (SimpleHTTPRequestHandler already handles
+        # If-Modified-Since/Last-Modified), it just forces a revalidation
+        # round-trip instead of trusting a cached copy blindly.
+        self.send_header('Cache-Control', 'no-cache')
+        super().end_headers()
+
     def do_GET(self):
         p = self.path.split('?')[0]
         if   p == '/api/settings':          self._get_settings()
