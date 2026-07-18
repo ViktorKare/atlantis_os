@@ -376,6 +376,36 @@ body::before {
 #sidebar button:hover,
 .section-sidebar > button:hover { filter: brightness(1.1); box-shadow: var(--glow-accent); }
 
+#new-chat-row {
+  display: flex;
+  gap: 6px;
+  margin: 12px;
+}
+#new-chat-row button {
+  margin: 0;
+  flex: 1;
+  white-space: nowrap;
+}
+#new-temp-chat-btn {
+  background: var(--glass-bg2);
+  color: var(--text-dim, inherit);
+  border: 1px solid var(--border);
+}
+
+.temp-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 999px;
+  color: var(--text-dim);
+  background: rgba(85, 96, 112, 0.15);
+  border: 1px solid var(--border);
+  vertical-align: middle;
+}
+
 #thread-list, #agent-list, #task-list, #plan-list, #skill-list {
   list-style: none;
   overflow-y: auto;

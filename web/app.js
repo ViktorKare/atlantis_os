@@ -81,8 +81,9 @@ let activeSection   = 'home';
 const sectionScrolls = {};
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
-const threadList   = document.getElementById('thread-list');
-const newChatBtn   = document.getElementById('new-chat-btn');
+const threadList      = document.getElementById('thread-list');
+const newChatBtn      = document.getElementById('new-chat-btn');
+const newTempChatBtn  = document.getElementById('new-temp-chat-btn');
 const agentSelect  = document.getElementById('agent-select');
 const modelSelect  = document.getElementById('model-select');
 const clearBtn     = document.getElementById('clear-btn');
@@ -1202,7 +1203,7 @@ document.getElementById('new-task-btn').addEventListener('click', createTask);
 // ── Chat — persistence ────────────────────────────────────────────────────────
 function save() {
   const thread = activeThread();
-  if (!thread) return;
+  if (!thread || thread.temporary) return;
   api('PUT', `/api/threads/${thread.id}`, {
     name: thread.name, model: state.model,
     agentId: state.selectedAgentId,
@@ -1264,12 +1265,12 @@ function activeThread() {
   return state.threads.find(t => t.id === state.activeId) || null;
 }
 
-async function createThread() {
+async function createThread(temporary = false) {
   const capacity = await currentCapacity();
   const agentId = pickDefaultAgentId(capacity) || null;
   const agent   = agentId ? agents.find(a => a.id === agentId) : null;
   const model   = agent ? pickModel(agent, capacity) : state.model;
-  const t = { id: uid(), name: 'New chat', model, agentId, systemPrompt: '', messages: [] };
+  const t = { id: uid(), name: temporary ? 'Temporary chat' : 'New chat', model, agentId, systemPrompt: '', messages: [], temporary };
   state.threads.unshift(t);
   state.activeId        = t.id;
   state.selectedAgentId = agentId;
@@ -1277,7 +1278,10 @@ async function createThread() {
   agentSelect.value     = agentId || '';
   modelSelect.value     = model;
   systemPrompt.value    = '';
-  await api('POST', '/api/threads', t).catch(() => {});
+  // Temporary threads never touch the server at all — nothing to persist,
+  // nothing to clean up, and they vanish on their own on next page load
+  // since load() only ever populates state.threads from GET /api/threads.
+  if (!temporary) await api('POST', '/api/threads', t).catch(() => {});
   renderSidebar();
   renderChat();
 }
@@ -1291,21 +1295,25 @@ function switchThread(id) {
 }
 
 async function deleteThread(id) {
+  const wasTemporary = state.threads.find(t => t.id === id)?.temporary;
   state.threads = state.threads.filter(t => t.id !== id);
   if (state.activeId === id) state.activeId = state.threads[0]?.id || null;
-  api('DELETE', `/api/threads/${id}`).catch(() => {});
+  if (!wasTemporary) api('DELETE', `/api/threads/${id}`).catch(() => {});
   if (state.threads.length === 0) createThread();
   else { renderSidebar(); renderChat(); }
 }
 
+const TEMP_BADGE = '<span class="temp-badge">TEMP</span> ';
+
 function renderSidebar() {
-  threadSwitcherName.textContent = activeThread()?.name || 'New chat';
+  const active = activeThread();
+  threadSwitcherName.innerHTML = (active?.temporary ? TEMP_BADGE : '') + escHtml(active?.name || 'New chat');
   threadList.innerHTML = '';
   state.threads.filter(t => t.name !== '__brain__').forEach(t => {
     const li  = document.createElement('li');
-    li.className   = t.id === state.activeId ? 'active' : '';
-    li.title       = t.name;
-    li.textContent = t.name;
+    li.className  = t.id === state.activeId ? 'active' : '';
+    li.title      = t.temporary ? `${t.name} — not saved` : t.name;
+    li.innerHTML  = (t.temporary ? TEMP_BADGE : '') + escHtml(t.name);
 
     const del = document.createElement('button');
     del.className   = 'thread-delete';
@@ -1712,8 +1720,10 @@ async function send() {
 
   const userMsgId = uid();
   thread.messages.push({ id: userMsgId, role: 'user', content: text });
-  api('POST', `/api/threads/${thread.id}/messages`, { id: userMsgId, role: 'user', content: text }).catch(() => {});
-  if (isFirstMsg) save(); // persist updated thread name
+  if (!thread.temporary) {
+    api('POST', `/api/threads/${thread.id}/messages`, { id: userMsgId, role: 'user', content: text }).catch(() => {});
+    if (isFirstMsg) save(); // persist updated thread name
+  }
 
   userInput.value = '';
   userInput.style.height = 'auto';
@@ -1846,11 +1856,13 @@ async function send() {
 
   const asstMsg = { id: uid(), role: 'assistant', content: parsed.response || '', thinking: parsed.thinking, meta: doneMeta };
   thread.messages.push(asstMsg);
-  api('POST', `/api/threads/${thread.id}/messages`, {
-    id: asstMsg.id, role: 'assistant', content: asstMsg.content,
-    thinking: asstMsg.thinking,
-    tokens: doneMeta?.eval_count, evalDuration: doneMeta?.eval_duration,
-  }).catch(() => {});
+  if (!thread.temporary) {
+    api('POST', `/api/threads/${thread.id}/messages`, {
+      id: asstMsg.id, role: 'assistant', content: asstMsg.content,
+      thinking: asstMsg.thinking,
+      tokens: doneMeta?.eval_count, evalDuration: doneMeta?.eval_duration,
+    }).catch(() => {});
+  }
 
   isGenerating      = false;
   abortController   = null;
@@ -1861,7 +1873,8 @@ async function send() {
 }
 
 // ── Chat — events ─────────────────────────────────────────────────────────────
-newChatBtn.addEventListener('click', createThread);
+newChatBtn.addEventListener('click', () => createThread(false));
+newTempChatBtn.addEventListener('click', () => createThread(true));
 
 sidebarToggleBtn.addEventListener('click', () => {
   chatSidebar.classList.toggle('collapsed');
@@ -1881,8 +1894,8 @@ threadSwitcherBtn.addEventListener('click', e => {
   threadSwitcherMenu.innerHTML = '';
   state.threads.filter(t => t.name !== '__brain__').forEach(t => {
     const li = document.createElement('li');
-    li.textContent = t.name;
-    li.className   = t.id === state.activeId ? 'active' : '';
+    li.innerHTML = (t.temporary ? TEMP_BADGE : '') + escHtml(t.name);
+    li.className = t.id === state.activeId ? 'active' : '';
     li.addEventListener('click', () => { switchThread(t.id); closeToolbarMenus(); });
     threadSwitcherMenu.appendChild(li);
   });
@@ -1917,8 +1930,8 @@ clearBtn.addEventListener('click', () => {
   const t = activeThread();
   if (!t) return;
   t.messages = [];
-  t.name     = 'New chat';
-  api('DELETE', `/api/threads/${t.id}/messages`).catch(() => {});
+  t.name     = t.temporary ? 'Temporary chat' : 'New chat';
+  if (!t.temporary) api('DELETE', `/api/threads/${t.id}/messages`).catch(() => {});
   renderSidebar();
   renderChat();
 });
