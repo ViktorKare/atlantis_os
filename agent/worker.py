@@ -443,13 +443,15 @@ def load_router(cfg):
     except Exception:
         return DEFAULT_ROUTER
 
-DEFAULT_OLLAMA_ENDPOINT = 'http://192.168.1.205:11434,http://192.168.1.251:11434,http://192.168.1.240:11434,http://localhost:11434'
+DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434'
 _ollama_host_cache = {'url': None, 'ts': 0.0}
 
 def resolve_ollama_endpoint(cfg):
     """Pick the first reachable host from the (comma-separated) `endpoint` setting
-    — defaults to the 205 → 251 → 240 → localhost fallback chain — caching the
-    winner for 20s so every LLM call doesn't re-probe all candidates."""
+    — defaults to localhost only, since network_hosts is no longer seeded with
+    anyone's specific LAN IPs; `endpoint` carries the real candidate list once
+    hosts are added via the Hosts tab. Caches the winner for 20s so every LLM
+    call doesn't re-probe all candidates."""
     candidates = [c.strip().rstrip('/') for c in (cfg.get('endpoint') or DEFAULT_OLLAMA_ENDPOINT).split(',') if c.strip()]
     if len(candidates) == 1:
         return candidates[0]

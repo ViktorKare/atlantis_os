@@ -56,12 +56,15 @@ PORT    = _config['port']
 RESTART_FLAG = DATA_DIR / '.restart'
 STOP_FLAG    = DATA_DIR / '.stop'
 
-DEFAULT_OLLAMA_ENDPOINT = 'http://192.168.1.205:11434,http://192.168.1.251:11434,http://192.168.1.240:11434,http://localhost:11434'
+DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434'
 _ollama_host_cache = {'url': None, 'ts': 0.0}
 
 def resolve_ollama_endpoint(raw_endpoint=None):
     """Pick the first reachable host from a comma-separated endpoint string
-    — defaults to the 205 → 251 → 240 → localhost fallback chain — caching the
+    — defaults to localhost only, since network_hosts is no longer seeded
+    with anyone's specific LAN IPs (see init_db()); settings.endpoint is
+    what actually carries the real candidate list once hosts are added via
+    the Hosts tab, via regenerate_ollama_endpoint_setting(). Caches the
     winner for 20s so every LLM call doesn't re-probe all candidates."""
     candidates = [c.strip().rstrip('/') for c in (raw_endpoint or DEFAULT_OLLAMA_ENDPOINT).split(',') if c.strip()]
     if len(candidates) == 1:
@@ -299,6 +302,7 @@ def init_db():
             'ALTER TABLE pipelines ADD COLUMN verify_command TEXT',
             'ALTER TABLE pipelines ADD COLUMN max_turns      INTEGER NOT NULL DEFAULT 20',
             'ALTER TABLE pipelines ADD COLUMN work_dir       TEXT',
+            'ALTER TABLE network_hosts ADD COLUMN gpu_name TEXT',
         ]:
             try:
                 db.execute(sql)
@@ -307,25 +311,17 @@ def init_db():
 
         # One-time backfill: atlantis/self predates the capacity concept and
         # is the one host known to be meaningfully weaker than .205/.251 —
-        # safe to run unconditionally every startup (idempotent).
+        # safe to run unconditionally every startup (idempotent). Only
+        # touches a row if one already exists under this id from before
+        # default seeding was removed (see below) — a no-op otherwise.
         db.execute("UPDATE network_hosts SET capacity='limited' WHERE id='host-240'")
 
-        # Seed default hosts on first run — matches the legacy
-        # DEFAULT_OLLAMA_ENDPOINT fallback order (205 -> 251 -> 240).
-        count = db.execute('SELECT COUNT(*) c FROM network_hosts').fetchone()['c']
-        if count == 0:
-            now = datetime.datetime.now().isoformat()
-            seeds = [
-                ('host-205', 'Host .205',       '192.168.1.205', 1, 'full'),
-                ('host-251', 'Host .251',       '192.168.1.251', 2, 'full'),
-                ('host-240', 'Atlantis / self', '192.168.1.240', 3, 'limited'),
-            ]
-            for hid, name, ip, priority, capacity in seeds:
-                db.execute(
-                    'INSERT INTO network_hosts (id,name,ip,mac,ollama_port,priority,enabled,created_at,capacity) '
-                    'VALUES (?,?,?,?,?,?,?,?,?)',
-                    (hid, name, ip, None, 11434, priority, 1, now, capacity)
-                )
+        # No default hosts are seeded on first run: this repo is shared
+        # between multiple people (each with their own LAN machines), so
+        # baking anyone's specific IPs/names into shared source code means
+        # everyone else inherits them on every fresh install. Each person
+        # adds only their own machines via the Hosts tab, stored in the
+        # local (gitignored) DB — never committed, never shared.
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
@@ -361,8 +357,13 @@ HOST_GPU_VALUES = {'nvidia', 'apple_silicon', 'amd', 'cpu_only'}
 HOST_CAPACITY_VALUES = {'full', 'limited'}
 
 def ping_host(ip):
+    # Windows' ping.exe takes -n for count, not -c — passing -c makes it
+    # error out immediately, so every host (including self) reported
+    # "Offline" regardless of actual reachability when server.py runs on
+    # Windows.
+    count_flag = '-n' if sys.platform == 'win32' else '-c'
     try:
-        result = subprocess.run(['ping', '-c', '1', ip],
+        result = subprocess.run(['ping', count_flag, '1', ip],
                                  capture_output=True, timeout=1.5)
         return result.returncode == 0
     except Exception:
@@ -553,6 +554,55 @@ def fetch_mac(ip, ssh_user, os_):
         mac = result.stdout.strip().lower()
         if result.returncode == 0 and _MAC_RE.fullmatch(mac):
             return mac
+    except Exception:
+        pass
+    return None
+
+def _gpu_name_fetch_cmd(gpu_arch):
+    """Shell one-liner that prints the exact GPU/chip model, when the
+    category has tooling to identify it. amd/cpu_only have no equivalent
+    (no live probing of any kind exists for them yet), so they yield None
+    and keep showing the generic label."""
+    if gpu_arch == 'nvidia':
+        return 'nvidia-smi --query-gpu=name --format=csv,noheader'
+    if gpu_arch == 'apple_silicon':
+        return "system_profiler SPDisplaysDataType | awk -F': ' '/Chipset Model/{print $2; exit}'"
+    return None
+
+def fetch_gpu_name(ip, ssh_user, gpu_arch):
+    """Best-effort exact GPU model discovery (e.g. 'NVIDIA GeForce RTX 4070'),
+    same local-vs-ssh dispatch as fetch_mac. nvidia-smi is invoked directly
+    (no shell wrapper) since it's a real executable on PATH on every OS that
+    has it, including Windows; apple_silicon goes through system_profiler
+    via sh -c since it's a pipeline. Multiple GPUs join on ', '; empty/failed
+    output yields None rather than saving garbage."""
+    if gpu_arch == 'nvidia':
+        argv = ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader']
+    else:
+        cmd = _gpu_name_fetch_cmd(gpu_arch)
+        if not cmd:
+            return None
+        argv = ['sh', '-c', cmd]
+    try:
+        if ip in local_ips():
+            result = subprocess.run(argv, capture_output=True, timeout=6, text=True)
+        elif gpu_arch == 'nvidia':
+            result = subprocess.run(
+                ['ssh', '-o', 'BatchMode=yes',
+                 '-o', 'StrictHostKeyChecking=accept-new',
+                 '-o', 'ConnectTimeout=2',
+                 f'{ssh_user}@{ip}', ' '.join(argv)],
+                capture_output=True, timeout=6, text=True)
+        else:
+            result = subprocess.run(
+                ['ssh', '-o', 'BatchMode=yes',
+                 '-o', 'StrictHostKeyChecking=accept-new',
+                 '-o', 'ConnectTimeout=2',
+                 f'{ssh_user}@{ip}', argv[-1]],
+                capture_output=True, timeout=6, text=True)
+        names = [n.strip() for n in result.stdout.splitlines() if n.strip()]
+        if result.returncode == 0 and names:
+            return ', '.join(dict.fromkeys(names))[:200]
     except Exception:
         pass
     return None
@@ -1077,8 +1127,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             'id': row['id'], 'name': row['name'], 'ip': row['ip'],
             'mac': row['mac'], 'ollamaPort': row['ollama_port'],
             'priority': row['priority'], 'enabled': bool(row['enabled']),
-            'os': row['os'], 'gpuArch': row['gpu_arch'], 'sshUser': row['ssh_user'],
-            'capacity': row['capacity'],
+            'os': row['os'], 'gpuArch': row['gpu_arch'], 'gpuName': row['gpu_name'],
+            'sshUser': row['ssh_user'], 'capacity': row['capacity'],
         }
 
     def _get_hosts(self):
@@ -1162,7 +1212,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _check_hosts(self):
         with get_db() as db:
             rows = rows_to_list(db.execute(
-                'SELECT id, ip, ollama_port, mac, ssh_user, os FROM network_hosts'
+                'SELECT id, ip, ollama_port, mac, ssh_user, os, gpu_arch, gpu_name FROM network_hosts'
             ).fetchall())
         results = {}
         if rows:
@@ -1189,6 +1239,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         db.execute('UPDATE network_hosts SET mac=? WHERE id=?', (mac, hid))
                 for hid, mac in found.items():
                     results.setdefault(hid, {})['mac'] = mac
+
+        # Exact GPU model auto-fill: same one-time-until-known pattern as
+        # the MAC fetch above, gated to arches fetch_gpu_name can identify.
+        gpu_to_fetch = [r for r in rows if not r['gpu_name'] and r['gpu_arch'] in ('nvidia', 'apple_silicon') and
+                        (r['ip'] in local_ips() or results.get(r['id'], {}).get('online'))]
+        if gpu_to_fetch:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(gpu_to_fetch)) as pool:
+                futures = {pool.submit(fetch_gpu_name, r['ip'], r['ssh_user'], r['gpu_arch']): r['id']
+                           for r in gpu_to_fetch}
+                fetched = {futures[fut]: fut.result() for fut in concurrent.futures.as_completed(futures)}
+            found = {hid: name for hid, name in fetched.items() if name}
+            if found:
+                with get_db() as db:
+                    for hid, name in found.items():
+                        db.execute('UPDATE network_hosts SET gpu_name=? WHERE id=?', (name, hid))
+                for hid, name in found.items():
+                    results.setdefault(hid, {})['gpuName'] = name
         self._json(results)
 
     def _wake_host(self, id):
@@ -1204,7 +1271,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _check_ssh(self, id):
         with get_db() as db:
-            row = db.execute('SELECT ip, ssh_user, os, mac FROM network_hosts WHERE id=?', (id,)).fetchone()
+            row = db.execute(
+                'SELECT ip, ssh_user, os, mac, gpu_arch, gpu_name FROM network_hosts WHERE id=?', (id,)
+            ).fetchone()
         if not row:
             return self.send_error(404)
         if row['ip'] in local_ips():
@@ -1221,7 +1290,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if mac:
                 with get_db() as db:
                     db.execute('UPDATE network_hosts SET mac=? WHERE id=?', (mac, id))
-        self._json({'ok': ok, 'error': error, 'mac': mac})
+        gpu_name = None
+        if ok and not row['gpu_name'] and row['gpu_arch'] in ('nvidia', 'apple_silicon'):
+            gpu_name = fetch_gpu_name(row['ip'], row['ssh_user'], row['gpu_arch'])
+            if gpu_name:
+                with get_db() as db:
+                    db.execute('UPDATE network_hosts SET gpu_name=? WHERE id=?', (gpu_name, id))
+        self._json({'ok': ok, 'error': error, 'mac': mac, 'gpuName': gpu_name})
 
     # ── Threads ─────────────────────────────────────────────────────────────
 
