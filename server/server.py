@@ -297,6 +297,7 @@ def init_db():
             'ALTER TABLE agents ADD COLUMN role            TEXT',
             'ALTER TABLE agents ADD COLUMN agent_goal      TEXT',
             'ALTER TABLE agents ADD COLUMN expected_output TEXT',
+            'ALTER TABLE agents ADD COLUMN think INTEGER',
             "ALTER TABLE pipelines ADD COLUMN mode           TEXT NOT NULL DEFAULT 'fixed'",
             "ALTER TABLE pipelines ADD COLUMN roster         TEXT NOT NULL DEFAULT '[]'",
             'ALTER TABLE pipelines ADD COLUMN verify_command TEXT',
@@ -988,27 +989,41 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             rows = rows_to_list(db.execute('SELECT * FROM agents').fetchall())
         self._json([self._agent_out(r) for r in rows])
 
+    @staticmethod
+    def _think_to_db(value):
+        # None ("auto") deliberately omits the `think` field from the Ollama
+        # request entirely rather than sending null, so models default to
+        # whatever their own baseline behavior is — only an explicit
+        # True/False in the UI should override that.
+        if value is True:
+            return 1
+        if value is False:
+            return 0
+        return None
+
     def _post_agent(self, body):
         tools = json.dumps(body.get('tools') or {})
+        think = self._think_to_db(body.get('think'))
         with get_db() as db:
             db.execute(
-                'INSERT INTO agents (id,name,model,system_prompt,temperature,top_p,context_len,tools,fallback_model,role,agent_goal,expected_output) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                'INSERT INTO agents (id,name,model,system_prompt,temperature,top_p,context_len,tools,fallback_model,role,agent_goal,expected_output,think) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
                 (body['id'], body['name'], body.get('model',''), body.get('systemPrompt',''),
                  body.get('temperature',0.7), body.get('topP',0.9), body.get('contextLen',4096), tools,
                  body.get('fallbackModel',''), body.get('role',''), body.get('agentGoal',''),
-                 body.get('expectedOutput',''))
+                 body.get('expectedOutput',''), think)
             )
         self._json({'ok': True})
 
     def _put_agent(self, id, body):
         tools = json.dumps(body.get('tools') or {})
+        think = self._think_to_db(body.get('think'))
         with get_db() as db:
             db.execute(
-                'UPDATE agents SET name=?,model=?,system_prompt=?,temperature=?,top_p=?,context_len=?,tools=?,fallback_model=?,role=?,agent_goal=?,expected_output=? WHERE id=?',
+                'UPDATE agents SET name=?,model=?,system_prompt=?,temperature=?,top_p=?,context_len=?,tools=?,fallback_model=?,role=?,agent_goal=?,expected_output=?,think=? WHERE id=?',
                 (body.get('name',''), body.get('model',''), body.get('systemPrompt',''),
                  body.get('temperature',0.7), body.get('topP',0.9), body.get('contextLen',4096), tools,
                  body.get('fallbackModel',''), body.get('role',''), body.get('agentGoal',''),
-                 body.get('expectedOutput',''), id)
+                 body.get('expectedOutput',''), think, id)
             )
         self._json({'ok': True})
 
@@ -1023,6 +1038,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             tools = json.loads(row['tools'] or '{}')
         except Exception:
             pass
+        think = row['think']
         return {
             'id': row['id'], 'name': row['name'], 'model': row['model'],
             'systemPrompt': row['system_prompt'], 'temperature': row['temperature'],
@@ -1030,6 +1046,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             'tools': tools, 'fallbackModel': row['fallback_model'] or '',
             'role': row['role'] or '', 'agentGoal': row['agent_goal'] or '',
             'expectedOutput': row['expected_output'] or '',
+            'think': (bool(think) if think is not None else None),
         }
 
     # ── Skills ──────────────────────────────────────────────────────────────

@@ -358,6 +358,8 @@ function saveAgentFromForm(id) {
   agent.temperature  = parseFloat(document.getElementById('agent-temperature').value);
   agent.topP         = parseFloat(document.getElementById('agent-top-p').value);
   agent.contextLen   = parseInt(document.getElementById('agent-context').value, 10);
+  const thinkVal = document.getElementById('agent-think').value;
+  agent.think = thinkVal === 'on' ? true : thinkVal === 'off' ? false : null;
   agent.tools        = {
     files:   document.getElementById('agent-tool-files').checked,
     web:     document.getElementById('agent-tool-web').checked,
@@ -486,6 +488,15 @@ function renderAgentEditor(agent) {
       <div class="editor-field">
         <label>Context length</label>
         <input type="number" id="agent-context" value="${agent.contextLen}" min="512" max="131072" step="512">
+      </div>
+      <div class="editor-field">
+        <label>Thinking <span class="label-hint">(hybrid-reasoning models like qwen3 only, e.g. qwen3.5:0.8b)</span></label>
+        <select id="agent-think">
+          <option value="auto"${agent.think === null || agent.think === undefined ? ' selected' : ''}>Auto (model default)</option>
+          <option value="on"${agent.think === true ? ' selected' : ''}>On</option>
+          <option value="off"${agent.think === false ? ' selected' : ''}>Off (faster, for simple tasks)</option>
+        </select>
+        <div class="editor-hint">Off skips the model's internal reasoning step entirely — much faster, but only worth using for narrow, low-ambiguity tasks like grammar fixes. Ignored by models that don't support toggling it.</div>
       </div>
       <div class="editor-field">
         <label>Native tools <span class="label-hint">(Ollama function calling)</span></label>
@@ -957,6 +968,7 @@ async function runTask(id) {
       looping = false;
       const body = { model, messages: msgs, stream: true, options: opts };
       if (tools.length) body.tools = tools;
+      if (agent && typeof agent.think === 'boolean') body.think = agent.think;
       const res = await fetch(`${await resolveOllama()}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1741,6 +1753,7 @@ async function send() {
       looping = false;
       const body = { model: sendModel, messages: apiMessages, stream: true, options };
       if (tools.length) body.tools = tools;
+      if (agent && typeof agent.think === 'boolean') body.think = agent.think;
 
       const res = await fetch(`${await resolveOllama()}/api/chat`, {
         method: 'POST',
