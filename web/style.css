@@ -3120,11 +3120,15 @@ button { font-family: inherit; }
 
 .tool-block {
   border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
   background: var(--bg2);
   max-width: 100%;
+  transition: border-left-color 0.2s ease;
 }
+.tool-block.has-error { border-left-color: var(--danger); }
+.tool-block.has-done  { border-left-color: var(--success); }
 .tool-block summary {
   display: flex;
   align-items: center;
@@ -3184,6 +3188,41 @@ button { font-family: inherit; }
   overflow-y: auto;
   overflow-x: auto;
 }
+
+/* ── Code editor chat: thinking indicator + streaming cursor ─────────────────── */
+
+.code-model-select:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.code-thinking {
+  display: inline-flex;
+  align-items: center;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.code-thinking-dots::after {
+  content: '';
+  display: inline-block;
+  width: 1.2em;
+  text-align: left;
+  animation: codeThinkingDots 1.2s steps(4, end) infinite;
+}
+@keyframes codeThinkingDots {
+  0%   { content: ''; }
+  25%  { content: '.'; }
+  50%  { content: '..'; }
+  75%  { content: '...'; }
+  100% { content: ''; }
+}
+.code-stream-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  background: var(--text-dim);
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: codeCursorBlink 0.9s step-start infinite;
+}
+@keyframes codeCursorBlink { 50% { opacity: 0; } }
 
 /* ── ask_user tool card ─────────────────────────────────────────────────────── */
 .ask-user-card { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; }

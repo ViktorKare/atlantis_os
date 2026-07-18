@@ -1525,10 +1525,12 @@ async function executeTool(name, params, targetWindow) {
       }
       case 'web_search': {
         const r = await api('GET', `/api/web/search?q=${encodeURIComponent(params.query || '')}`);
+        if (r?.error) return `Error: ${r.error}`;
         return typeof r === 'string' ? r : JSON.stringify(r, null, 2);
       }
       case 'web_fetch': {
         const r = await api('GET', `/api/web/fetch?url=${encodeURIComponent(params.url || '')}`);
+        if (r?.error) return `Error: ${r.error}`;
         return typeof r === 'string' ? r : JSON.stringify(r, null, 2);
       }
       case 'ask_user': {
@@ -1581,6 +1583,7 @@ function finishToolBlock(block, result) {
   const failed = /^Error:/.test(text);
   block.statusEl.textContent = failed ? 'Error' : 'Done';
   block.statusEl.classList.add(failed ? 'error' : 'done');
+  block.el.classList.add(failed ? 'has-error' : 'has-done');
   if (failed) block.el.open = true;
   const truncated = text.length > 1000 ? text.slice(0, 1000) + '\n…' : text;
   block.contentEl.insertAdjacentHTML('beforeend',
