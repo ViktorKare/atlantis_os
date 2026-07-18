@@ -90,8 +90,8 @@ export class MockAIProvider {
 }
 
 export class RealFileProvider {
-  async list(path) {
-    const r = await api('GET', `/api/fs?path=${encodeURIComponent(path || '')}`);
+  async list(path, { unrestricted = false } = {}) {
+    const r = await api('GET', `/api/fs?path=${encodeURIComponent(path || '')}${unrestricted ? '&unrestricted=1' : ''}`);
     if (r.error) throw new Error(r.error);
     return (r.entries || []).map(e => ({
       name: e.name,

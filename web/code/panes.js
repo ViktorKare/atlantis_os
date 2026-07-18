@@ -58,10 +58,14 @@ function openInNearestEditor(path) {
   target.controller?.openFile?.(path);
 }
 
+function refreshTreePanes() {
+  panes.forEach(p => { if (p.type === 'tree') p.controller?.refresh?.(); });
+}
+
 function mountPane(pane) {
   const body = pane.el.querySelector('.code-pane-body');
   if (pane.type === 'chat') {
-    pane.controller = createChatPane(body, { aiProvider, fileProvider, getFocusedEditor, isFileOpenAnywhere });
+    pane.controller = createChatPane(body, { aiProvider, fileProvider, getFocusedEditor, isFileOpenAnywhere, onFileTreeChanged: refreshTreePanes });
   } else if (pane.type === 'editor') {
     pane.controller = createEditorPane(body, { fileProvider, onFocus: () => { focusedEditorPaneId = pane.id; } });
   } else if (pane.type === 'tree') {

@@ -66,7 +66,7 @@ function openFolderPicker(fileProvider, startPath, onSelect) {
     async function load(path) {
       errEl.classList.add('hidden');
       try {
-        const entries = await fileProvider.list(path);
+        const entries = await fileProvider.list(path, { unrestricted: true });
         browsePath = path;
         pathEl.textContent = browsePath || '/';
         const dirs = entries.filter(e => e.type === 'dir');
@@ -269,10 +269,10 @@ function shiftHunksAfter(hunks, fromIdx, delta) {
   return hunks.map((h, i) => (i > fromIdx ? { ...h, from: h.from + delta, to: h.to + delta } : h));
 }
 
-function reviewHunks(view, hunks, idx, fileProvider, path, resolveDone) {
+function reviewHunks(view, hunks, idx, fileProvider, path, resolveDone, anyAccepted = false) {
   if (idx >= hunks.length) {
     view.dispatch({ effects: clearDiff.of(null) });
-    resolveDone();
+    resolveDone(anyAccepted);
     return;
   }
   const hunk = hunks[idx];
@@ -280,9 +280,9 @@ function reviewHunks(view, hunks, idx, fileProvider, path, resolveDone) {
     const delta = hunk.addedText.length - (hunk.to - hunk.from);
     view.dispatch({ changes: { from: hunk.from, to: hunk.to, insert: hunk.addedText }, effects: clearDiff.of(null) });
     fileProvider.write(path, view.state.doc.toString());
-    reviewHunks(view, shiftHunksAfter(hunks, idx, delta), idx + 1, fileProvider, path, resolveDone);
+    reviewHunks(view, shiftHunksAfter(hunks, idx, delta), idx + 1, fileProvider, path, resolveDone, true);
   };
-  const onReject = () => reviewHunks(view, hunks, idx + 1, fileProvider, path, resolveDone);
+  const onReject = () => reviewHunks(view, hunks, idx + 1, fileProvider, path, resolveDone, anyAccepted);
   view.dispatch({ effects: setDiff.of({ pos: hunk.from, widget: new DiffHunkWidget(hunk, onAccept, onReject) }) });
 }
 
@@ -380,7 +380,7 @@ export function createEditorPane(bodyEl, { fileProvider, onFocus } = {}) {
     view.focus();
   }
 
-  async function proposeDiff(newContent, { autoAccept = false } = {}) {
+  async function proposeDiff(newContent, { autoAccept = false, onSettled } = {}) {
     if (!view || !currentPath) return { applied: false, hunkCount: 0 };
     const oldContent = view.state.doc.toString();
     const hunks = computeHunks(oldContent, newContent);
@@ -388,9 +388,12 @@ export function createEditorPane(bodyEl, { fileProvider, onFocus } = {}) {
     if (autoAccept) {
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: newContent } });
       await fileProvider.write(currentPath, newContent);
+      onSettled?.(true);
       return { applied: true, hunkCount: hunks.length };
     }
-    reviewHunks(view, hunks, 0, fileProvider, currentPath, () => {});
+    // Review is interactive (the user accepts/rejects each hunk in the editor UI), so this
+    // resolves later, independently of the { applied: false } returned to the caller below.
+    reviewHunks(view, hunks, 0, fileProvider, currentPath, wasAccepted => onSettled?.(wasAccepted));
     return { applied: false, hunkCount: hunks.length };
   }
 
@@ -435,12 +438,14 @@ export function createTreePane(bodyEl, { fileProvider, openInEditor, onChangeRoo
   bodyEl.innerHTML = `
     <div class="code-tree-header">
       <span class="code-root-label">${rootLabel}</span>
+      <button type="button" class="code-tree-refresh-btn" title="Refresh file tree">⟳</button>
       <button type="button" class="code-tree-change-root-btn" title="Change workspace folder">Change…</button>
     </div>
     <div class="code-tree"></div>`;
-  const treeEl    = bodyEl.querySelector('.code-tree');
-  const labelEl   = bodyEl.querySelector('.code-root-label');
-  const changeBtn = bodyEl.querySelector('.code-tree-change-root-btn');
+  const treeEl     = bodyEl.querySelector('.code-tree');
+  const labelEl    = bodyEl.querySelector('.code-root-label');
+  const refreshBtn = bodyEl.querySelector('.code-tree-refresh-btn');
+  const changeBtn  = bodyEl.querySelector('.code-tree-change-root-btn');
 
   let currentRootPath = rootPath;
 
@@ -488,14 +493,19 @@ export function createTreePane(bodyEl, { fileProvider, openInEditor, onChangeRoo
   changeBtn.addEventListener('click', () => {
     openFolderPicker(fileProvider, currentRootPath, path => onChangeRoot?.(path));
   });
+  refreshBtn.addEventListener('click', () => renderRoot());
 
   renderRoot();
 
   return {
     destroy() { bodyEl.innerHTML = ''; },
+    // Called both on an explicit root change (both args given) and as a plain
+    // re-list of the current root when files were created/removed elsewhere
+    // (no args — e.g. after the AI panel creates a file, or a background
+    // pipeline job writes into the workspace).
     refresh(newRootPath, newRootLabel) {
-      currentRootPath = newRootPath;
-      labelEl.textContent = newRootLabel;
+      if (newRootPath !== undefined) currentRootPath = newRootPath;
+      if (newRootLabel !== undefined) labelEl.textContent = newRootLabel;
       renderRoot();
     },
   };

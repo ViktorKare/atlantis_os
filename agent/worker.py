@@ -335,6 +335,40 @@ def browser_snapshot():
             'elements': els,
             'hint': 'Use the ref numbers with browser_click / browser_type.'}
 
+def _edit_file_content(text, old, new, replace_all):
+    """Apply an old_string -> new_string replacement, falling back to a
+    trailing-whitespace-insensitive line match when the exact string isn't
+    found (the most common accidental mismatch). Returns (new_text, note);
+    note is set when the fallback was used. Raises ValueError with an
+    actionable message (match count, line numbers) when it can't resolve
+    to a single unambiguous location.
+    """
+    count = text.count(old)
+    if count == 1 or (count > 1 and replace_all):
+        return (text.replace(old, new) if replace_all else text.replace(old, new, 1)), None
+
+    file_lines = text.split('\n')
+    if count == 0:
+        old_lines = old.split('\n')
+        matches = [i for i in range(len(file_lines) - len(old_lines) + 1)
+                   if all(file_lines[i + j].rstrip() == old_lines[j].rstrip() for j in range(len(old_lines)))]
+        if len(matches) == 1:
+            i = matches[0]
+            new_lines = file_lines[:i] + new.split('\n') + file_lines[i + len(old_lines):]
+            return '\n'.join(new_lines), 'matched after ignoring trailing-whitespace differences'
+        if len(matches) > 1:
+            raise ValueError(f'old_string matches {len(matches)} places when ignoring trailing whitespace '
+                              '— add more surrounding context to make it unique, or set replace_all=true')
+        raise ValueError('old_string not found in file, even after ignoring trailing whitespace differences.')
+
+    line_nums = [i + 1 for i, l in enumerate(file_lines) if old in l] if '\n' not in old else []
+    if line_nums:
+        shown = ', '.join(str(n) for n in line_nums[:8])
+        more = f' (+{len(line_nums) - 8} more)' if len(line_nums) > 8 else ''
+        raise ValueError(f'old_string occurs {count} times, at lines {shown}{more} '
+                          '— add surrounding context to make it unique, or set replace_all=true')
+    raise ValueError(f'old_string occurs {count} times — add surrounding context to make it unique, or set replace_all=true')
+
 def exec_tool(name, args, allowed=None, work_root=None):
     if allowed is not None and name not in allowed:
         return {'error': f'Tool not permitted for this agent: {name}'}
@@ -358,13 +392,15 @@ def exec_tool(name, args, allowed=None, work_root=None):
             if not old:
                 return {'error': 'old_string is required'}
             text = p.read_text()
-            count = text.count(old)
-            if count == 0:
-                return {'error': 'old_string not found in file'}
-            if count > 1 and not args.get('replace_all'):
-                return {'error': f'old_string occurs {count} times — add surrounding context to make it unique, or set replace_all=true'}
-            p.write_text(text.replace(old, new) if args.get('replace_all') else text.replace(old, new, 1))
-            return {'ok': True, 'path': str(p), 'replacements': count if args.get('replace_all') else 1}
+            try:
+                new_text, note = _edit_file_content(text, old, new, bool(args.get('replace_all')))
+            except ValueError as e:
+                return {'error': str(e)}
+            p.write_text(new_text)
+            result = {'ok': True, 'path': str(p)}
+            if note:
+                result['note'] = note
+            return result
         elif name == 'list_files':
             p = pipe_path_safe(args.get('path', str(root)), work_root)
             entries = [{'name': e.name, 'type': 'dir' if e.is_dir() else 'file'}

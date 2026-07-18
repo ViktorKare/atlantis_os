@@ -27,7 +27,123 @@ function buildCodeToolManifest(toolPerms) {
   return lines.join('\n');
 }
 
-export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEditor, isFileOpenAnywhere } = {}) {
+// Mirrors agent/worker.py's _edit_file_content: exact match first, falling back to a
+// trailing-whitespace-insensitive line match when the exact string isn't found (the most
+// common accidental mismatch). Returns { content } or { error }.
+function resolveEditReplacement(oldContent, oldString, newString, replaceAll) {
+  const count = oldContent.split(oldString).length - 1;
+  if (count === 1 || (count > 1 && replaceAll)) {
+    return { content: replaceAll ? oldContent.split(oldString).join(newString) : oldContent.replace(oldString, newString) };
+  }
+
+  const fileLines = oldContent.split('\n');
+  if (count === 0) {
+    const oldLines = oldString.split('\n');
+    const matches = [];
+    for (let i = 0; i + oldLines.length <= fileLines.length; i++) {
+      let ok = true;
+      for (let j = 0; j < oldLines.length; j++) {
+        if (fileLines[i + j].replace(/\s+$/, '') !== oldLines[j].replace(/\s+$/, '')) { ok = false; break; }
+      }
+      if (ok) matches.push(i);
+    }
+    if (matches.length === 1) {
+      const i = matches[0];
+      const newLines = fileLines.slice(0, i).concat(newString.split('\n'), fileLines.slice(i + oldLines.length));
+      return { content: newLines.join('\n') };
+    }
+    if (matches.length > 1) {
+      return { error: `old_string matches ${matches.length} places when ignoring trailing whitespace — add more surrounding context to make it unique, or set replace_all=true` };
+    }
+    return { error: 'old_string not found in file, even after ignoring trailing whitespace differences.' };
+  }
+
+  let lineNums = null;
+  if (!oldString.includes('\n')) {
+    lineNums = [];
+    fileLines.forEach((l, i) => { if (l.includes(oldString)) lineNums.push(i + 1); });
+  }
+  if (lineNums && lineNums.length) {
+    const shown = lineNums.slice(0, 8).join(', ');
+    const more = lineNums.length > 8 ? ` (+${lineNums.length - 8} more)` : '';
+    return { error: `old_string occurs ${count} times, at lines ${shown}${more} — add surrounding context to make it unique, or set replace_all=true` };
+  }
+  return { error: `old_string occurs ${count} times — add surrounding context to make it unique, or set replace_all=true` };
+}
+
+// ── Thinking indicator ──────────────────────────────────────────────────────
+// Shown from send until the first streamed chunk arrives, replacing the old static "▋".
+
+const THINKING_PHRASES = ['Thinking', 'Working on it', 'Reasoning'];
+
+function thinkingIndicatorHTML() {
+  return `<span class="code-thinking"><span class="code-thinking-label">${THINKING_PHRASES[0]}</span><span class="code-thinking-dots"></span></span>`;
+}
+
+function startThinking(el) {
+  let idx = 0;
+  el.innerHTML = thinkingIndicatorHTML();
+  return setInterval(() => {
+    idx = (idx + 1) % THINKING_PHRASES.length;
+    const label = el.querySelector('.code-thinking-label');
+    if (label) label.textContent = THINKING_PHRASES[idx];
+  }, 1400);
+}
+
+// ── Spinning favicon while busy ──────────────────────────────────────────────
+// Shared across all chat panes (module-level) so multiple panes don't fight over the tab icon.
+
+const FAVICON_HREF = '/favicon.ico';
+let faviconBusyCount = 0;
+let faviconSpinTimer = null;
+let faviconAngle = 0;
+let faviconImg = null;
+
+function faviconLink() {
+  let link = document.querySelector('link[rel="icon"]');
+  if (!link) {
+    link = document.createElement('link');
+    link.rel = 'icon';
+    document.head.appendChild(link);
+  }
+  return link;
+}
+
+function spinFaviconFrame() {
+  const size = 32;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  ctx.translate(size / 2, size / 2);
+  ctx.rotate(faviconAngle);
+  ctx.drawImage(faviconImg, -size / 2, -size / 2, size, size);
+  faviconLink().href = canvas.toDataURL('image/png');
+  faviconAngle += Math.PI / 8;
+}
+
+function startFaviconSpin() {
+  faviconBusyCount++;
+  if (faviconBusyCount > 1) return;
+  if (faviconImg) { faviconSpinTimer = setInterval(spinFaviconFrame, 100); return; }
+  const img = new Image();
+  img.onload = () => {
+    faviconImg = img;
+    if (faviconBusyCount > 0) faviconSpinTimer = setInterval(spinFaviconFrame, 100);
+  };
+  img.src = FAVICON_HREF;
+}
+
+function stopFaviconSpin() {
+  faviconBusyCount = Math.max(0, faviconBusyCount - 1);
+  if (faviconBusyCount > 0) return;
+  clearInterval(faviconSpinTimer);
+  faviconSpinTimer = null;
+  faviconAngle = 0;
+  faviconLink().href = FAVICON_HREF;
+}
+
+export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEditor, isFileOpenAnywhere, onFileTreeChanged } = {}) {
   bodyEl.innerHTML = `
     <div class="code-chat-toolbar">
       <select class="code-agent-select"><option value="">No agent</option></select>
@@ -63,6 +179,22 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
       agentsList.map(a => `<option value="${a.id}">${escHtml(a.name)}</option>`).join('');
   }).catch(() => {});
 
+  // An agent already has a model attached — once one is picked, lock the model
+  // select to it instead of letting the user choose a model the agent won't use.
+  let allModels = [];
+  function applyModelSelectState() {
+    const agent = agentSelect.value ? agentsList.find(a => a.id === agentSelect.value) : null;
+    if (agent?.model) {
+      modelSelect.innerHTML = `<option value="${escHtml(agent.model)}">${escHtml(agent.model)}</option>`;
+      modelSelect.value = agent.model;
+      modelSelect.disabled = true;
+    } else {
+      modelSelect.innerHTML = allModels.map(m => `<option value="${m}">${m}</option>`).join('');
+      modelSelect.disabled = false;
+    }
+  }
+  agentSelect.addEventListener('change', applyModelSelectState);
+
   const AUTO_MODES = ['off', 'all', 'risky'];
   const AUTO_LABELS = { off: 'Off', all: 'Auto-accept all', risky: 'Auto-accept, ask on risky' };
   let autoIdx = 0;
@@ -73,7 +205,8 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
   });
 
   aiProvider.listModels().then(models => {
-    modelSelect.innerHTML = models.map(m => `<option value="${m}">${m}</option>`).join('');
+    allModels = models;
+    applyModelSelectState();
   });
 
   let skills = [];
@@ -161,7 +294,6 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     bubble.className = 'bubble';
     const rd = document.createElement('div');
     rd.className = 'response-content';
-    rd.innerHTML = marked.parse('▋');
     bubble.appendChild(rd);
     wrap.appendChild(bubble);
     chatWindow.appendChild(wrap);
@@ -262,22 +394,27 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
 
     const { wrap: assistantWrap, rd: assistantEl } = createAssistantBubble();
     let fullText = '';
+    let thinkingTimer = null;
+    startFaviconSpin();
     try {
       let looping = true;
       while (looping) {
         looping = false;
         fullText = '';
         let turnToolCalls = null;
-        assistantEl.innerHTML = marked.parse('▋');
+        thinkingTimer = startThinking(assistantEl);
         for await (const chunk of aiProvider.chat({ messages: apiMessages, model, tools })) {
           if (typeof chunk === 'string') {
+            if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
             fullText += chunk;
-            assistantEl.innerHTML = marked.parse(fullText + ' ▋');
+            assistantEl.innerHTML = marked.parse(fullText) + '<span class="code-stream-cursor"></span>';
             chatWindow.scrollTop = chatWindow.scrollHeight;
           } else if (chunk?.toolCalls) {
             turnToolCalls = chunk.toolCalls;
           }
         }
+        clearInterval(thinkingTimer);
+        thinkingTimer = null;
         if (turnToolCalls?.length) {
           apiMessages.push({ role: 'assistant', content: '', tool_calls: turnToolCalls });
           if (fullText) history.push({ role: 'assistant', content: fullText });
@@ -304,8 +441,10 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     } catch (err) {
       assistantEl.innerHTML = marked.parse(`*Error: ${err?.message || 'request failed'}*`);
     } finally {
+      clearInterval(thinkingTimer);
       busy = false;
       sendBtn.disabled = false;
+      stopFaviconSpin();
     }
     if (assistantWrap.isConnected) {
       assistantWrap.appendChild(buildMeta('assistant', fullText, null));
@@ -313,20 +452,27 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     }
   }
 
+  // Every failure path returns a string starting with "Error:" — finishToolBlock() (app.js)
+  // keys off that prefix to show a red "Error" status instead of "Done", so a failed tool
+  // call is visibly distinguishable in the transcript even if the model's own reply doesn't
+  // correctly acknowledge the failure.
   async function executeCodeTool(name, params) {
     try {
       switch (name) {
         case 'read_file': {
           const r = await api('POST', '/api/tools/exec', { name: 'read_file', args: params });
+          if (r?.error) return `Error: ${r.error}`;
           return typeof r === 'string' ? r : (r.content ?? JSON.stringify(r));
         }
         case 'list_dir': {
           const r = await api('POST', '/api/tools/exec', { name: 'list_files', args: params });
+          if (r?.error) return `Error: ${r.error}`;
           return typeof r === 'string' ? r : JSON.stringify(r);
         }
         case 'search_files':
         case 'run_command': {
           const r = await api('POST', '/api/tools/exec', { name, args: params });
+          if (r?.error) return `Error: ${r.error}`;
           return typeof r === 'string' ? r : JSON.stringify(r);
         }
         case 'propose_edit': {
@@ -339,31 +485,31 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
           if (editorCtrl.getActiveFile() !== params.path) await editorCtrl.openFile(params.path);
           const oldContent = (await fileProvider.read(params.path).catch(() => null));
           if (oldContent == null) return `Error: could not read ${params.path}`;
-          const idx = params.replace_all
-            ? null
-            : (() => { const i = oldContent.indexOf(params.old_string); return i === oldContent.lastIndexOf(params.old_string) ? i : -1; })();
-          if (!params.replace_all && idx === -1) return 'Error: old_string must occur exactly once (or set replace_all)';
-          const newContent = params.replace_all
-            ? oldContent.split(params.old_string).join(params.new_string)
-            : oldContent.slice(0, idx) + params.new_string + oldContent.slice(idx + params.old_string.length);
-          const { applied, hunkCount } = await editorCtrl.proposeDiff(newContent, { autoAccept });
-          return applied ? `Applied ${hunkCount} hunk(s) to ${params.path}` : `Proposed ${hunkCount} hunk(s) to ${params.path}, shown to the user for review`;
+          if (!params.old_string) return 'Error: old_string is required';
+          const resolved = resolveEditReplacement(oldContent, params.old_string, params.new_string, params.replace_all);
+          if (resolved.error) return `Error: ${resolved.error}`;
+          const { applied, hunkCount } = await editorCtrl.proposeDiff(resolved.content, { autoAccept });
+          return applied ? `Applied ${hunkCount} hunk(s) to ${params.path}`
+            : `NOT applied yet: ${hunkCount} hunk(s) proposed to ${params.path} and shown to the user for review in the editor. ` +
+              `Do not tell the user the file has been changed — it hasn't, until they accept the hunk(s) themselves.`;
         }
         case 'propose_new_file': {
           let editorCtrl = getFocusedEditor();
           if (!editorCtrl) return 'Error: no Editor pane open';
           const autoAccept = shouldAutoAccept(params.path, isFileOpenAnywhere);
           await editorCtrl.openFile(params.path, { initialContent: '' });
-          const { applied, hunkCount } = await editorCtrl.proposeDiff(params.content, { autoAccept });
-          return applied ? `Created ${params.path}` : `Proposed new file ${params.path} (${hunkCount} hunk(s)), shown to the user for review`;
+          const { applied, hunkCount } = await editorCtrl.proposeDiff(params.content, { autoAccept, onSettled: onFileTreeChanged });
+          return applied ? `Created ${params.path}`
+            : `NOT created yet: new file ${params.path} (${hunkCount} hunk(s)) proposed and shown to the user for review in the editor. ` +
+              `Do not tell the user the file has been created — it hasn't, until they accept the hunk(s) themselves.`;
         }
         case 'ask_user':
           return await renderAskUserCard(params);
         default:
-          return `Unknown tool: ${name}`;
+          return `Error: unknown tool: ${name}`;
       }
     } catch (e) {
-      return `Tool error: ${e.message}`;
+      return `Error: ${e.message}`;
     }
   }
 
