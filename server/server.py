@@ -2960,7 +2960,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             row = db.execute('SELECT root_path FROM code_sessions WHERE id=?', ('default',)).fetchone()
         return Path(row['root_path']) if row and row['root_path'] else Path.home()
 
-    def _fs_safe(self, rel, root=None):
+    def _fs_safe(self, rel, root=None, unrestricted=False):
         if root is None:
             root = self._fs_root()
         # Check containment on the lexical (un-resolved) path so a symlink anywhere under the
@@ -2970,17 +2970,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # itself may legitimately live outside home (e.g. a separate mounted drive).
         candidate = Path(rel) if str(rel).startswith('/') else (root / rel)
         candidate = Path(os.path.normpath(str(candidate)))
-        try:
-            candidate.relative_to(os.path.normpath(str(root)))
-        except ValueError:
-            raise PermissionError(f'Path outside workspace root: {candidate}')
+        # unrestricted=True skips the containment check entirely — used only by the folder
+        # picker's directory listing while choosing a *new* workspace root, which by definition
+        # needs to browse outside the current root (mirrors _put_code_session, which resolves
+        # a new rootPath with no fence rather than checking it against the old one).
+        if not unrestricted:
+            try:
+                candidate.relative_to(os.path.normpath(str(root)))
+            except ValueError:
+                raise PermissionError(f'Path outside workspace root: {candidate}')
         return candidate.resolve()
 
     def _fs_list(self):
         qs   = dict(pair.split('=', 1) for pair in self.path.split('?', 1)[1].split('&')) if '?' in self.path else {}
         rel  = urllib.parse.unquote(qs.get('path', ''))
+        unrestricted = qs.get('unrestricted') == '1'
         try:
-            p = self._fs_safe(rel)
+            p = self._fs_safe(rel, unrestricted=unrestricted)
             if not p.exists():
                 return self._json({'error': 'Not found'}, 404)
             if p.is_file():

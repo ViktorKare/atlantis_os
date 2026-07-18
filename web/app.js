@@ -1542,13 +1542,14 @@ async function executeTool(name, params, targetWindow) {
       default: {
         if (SERVER_TOOLS.has(name)) {
           const r = await api('POST', '/api/tools/exec', { name, args: params || {} });
+          if (r?.error) return `Error: ${r.error}`;
           return typeof r === 'string' ? r : JSON.stringify(r, null, 2);
         }
-        return `Unknown tool: ${name}`;
+        return `Error: unknown tool: ${name}`;
       }
     }
   } catch (e) {
-    return `Tool error: ${e.message}`;
+    return `Error: ${e.message}`;
   }
 }
 
@@ -1573,9 +1574,14 @@ function buildToolBlock(name, args) {
 
 function finishToolBlock(block, result) {
   if (!block) return;
-  block.statusEl.textContent = 'Done';
-  block.statusEl.classList.add('done');
-  const text      = String(result);
+  const text   = String(result);
+  // Every tool implementation (executeTool/executeCodeTool) prefixes failure strings with
+  // "Error:" — key off that so a failed tool call is visibly distinct from a successful one
+  // even when the model's own follow-up text doesn't correctly acknowledge the failure.
+  const failed = /^Error:/.test(text);
+  block.statusEl.textContent = failed ? 'Error' : 'Done';
+  block.statusEl.classList.add(failed ? 'error' : 'done');
+  if (failed) block.el.open = true;
   const truncated = text.length > 1000 ? text.slice(0, 1000) + '\n…' : text;
   block.contentEl.insertAdjacentHTML('beforeend',
     `<div class="tool-block-section-label">Result</div><pre class="tool-block-pre">${escHtml(truncated)}</pre>`);

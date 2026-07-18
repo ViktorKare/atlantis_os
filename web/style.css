@@ -3042,7 +3042,8 @@ button { font-family: inherit; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.code-tree-change-root-btn {
+.code-tree-change-root-btn,
+.code-tree-refresh-btn {
   flex-shrink: 0;
   padding: 3px 8px;
   font-size: 12px;
@@ -3052,7 +3053,8 @@ button { font-family: inherit; }
   color: var(--text-dim);
   cursor: pointer;
 }
-.code-tree-change-root-btn:hover { color: var(--text); background: var(--bg2); }
+.code-tree-change-root-btn:hover,
+.code-tree-refresh-btn:hover { color: var(--text); background: var(--bg2); }
 
 .code-folder-picker-overlay {
   position: fixed;
@@ -3156,6 +3158,7 @@ button { font-family: inherit; }
   color: var(--text-dim);
 }
 .tool-block-status.done { color: var(--success); }
+.tool-block-status.error { color: var(--danger); }
 
 .tool-block-content {
   padding: 10px 12px;

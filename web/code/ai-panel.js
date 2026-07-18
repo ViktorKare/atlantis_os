@@ -27,7 +27,7 @@ function buildCodeToolManifest(toolPerms) {
   return lines.join('\n');
 }
 
-export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEditor, isFileOpenAnywhere } = {}) {
+export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEditor, isFileOpenAnywhere, onFileTreeChanged } = {}) {
   bodyEl.innerHTML = `
     <div class="code-chat-toolbar">
       <select class="code-agent-select"><option value="">No agent</option></select>
@@ -313,20 +313,27 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     }
   }
 
+  // Every failure path returns a string starting with "Error:" — finishToolBlock() (app.js)
+  // keys off that prefix to show a red "Error" status instead of "Done", so a failed tool
+  // call is visibly distinguishable in the transcript even if the model's own reply doesn't
+  // correctly acknowledge the failure.
   async function executeCodeTool(name, params) {
     try {
       switch (name) {
         case 'read_file': {
           const r = await api('POST', '/api/tools/exec', { name: 'read_file', args: params });
+          if (r?.error) return `Error: ${r.error}`;
           return typeof r === 'string' ? r : (r.content ?? JSON.stringify(r));
         }
         case 'list_dir': {
           const r = await api('POST', '/api/tools/exec', { name: 'list_files', args: params });
+          if (r?.error) return `Error: ${r.error}`;
           return typeof r === 'string' ? r : JSON.stringify(r);
         }
         case 'search_files':
         case 'run_command': {
           const r = await api('POST', '/api/tools/exec', { name, args: params });
+          if (r?.error) return `Error: ${r.error}`;
           return typeof r === 'string' ? r : JSON.stringify(r);
         }
         case 'propose_edit': {
@@ -339,31 +346,40 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
           if (editorCtrl.getActiveFile() !== params.path) await editorCtrl.openFile(params.path);
           const oldContent = (await fileProvider.read(params.path).catch(() => null));
           if (oldContent == null) return `Error: could not read ${params.path}`;
-          const idx = params.replace_all
-            ? null
-            : (() => { const i = oldContent.indexOf(params.old_string); return i === oldContent.lastIndexOf(params.old_string) ? i : -1; })();
-          if (!params.replace_all && idx === -1) return 'Error: old_string must occur exactly once (or set replace_all)';
+          if (!params.old_string) return 'Error: old_string is required';
+          const occurrences = oldContent.split(params.old_string).length - 1;
+          if (!params.replace_all) {
+            if (occurrences === 0) return 'Error: old_string not found in file';
+            if (occurrences > 1) return `Error: old_string occurs ${occurrences} times — add surrounding context to make it unique, or set replace_all=true`;
+          } else if (occurrences === 0) {
+            return 'Error: old_string not found in file';
+          }
+          const idx = oldContent.indexOf(params.old_string);
           const newContent = params.replace_all
             ? oldContent.split(params.old_string).join(params.new_string)
             : oldContent.slice(0, idx) + params.new_string + oldContent.slice(idx + params.old_string.length);
           const { applied, hunkCount } = await editorCtrl.proposeDiff(newContent, { autoAccept });
-          return applied ? `Applied ${hunkCount} hunk(s) to ${params.path}` : `Proposed ${hunkCount} hunk(s) to ${params.path}, shown to the user for review`;
+          return applied ? `Applied ${hunkCount} hunk(s) to ${params.path}`
+            : `NOT applied yet: ${hunkCount} hunk(s) proposed to ${params.path} and shown to the user for review in the editor. ` +
+              `Do not tell the user the file has been changed — it hasn't, until they accept the hunk(s) themselves.`;
         }
         case 'propose_new_file': {
           let editorCtrl = getFocusedEditor();
           if (!editorCtrl) return 'Error: no Editor pane open';
           const autoAccept = shouldAutoAccept(params.path, isFileOpenAnywhere);
           await editorCtrl.openFile(params.path, { initialContent: '' });
-          const { applied, hunkCount } = await editorCtrl.proposeDiff(params.content, { autoAccept });
-          return applied ? `Created ${params.path}` : `Proposed new file ${params.path} (${hunkCount} hunk(s)), shown to the user for review`;
+          const { applied, hunkCount } = await editorCtrl.proposeDiff(params.content, { autoAccept, onSettled: onFileTreeChanged });
+          return applied ? `Created ${params.path}`
+            : `NOT created yet: new file ${params.path} (${hunkCount} hunk(s)) proposed and shown to the user for review in the editor. ` +
+              `Do not tell the user the file has been created — it hasn't, until they accept the hunk(s) themselves.`;
         }
         case 'ask_user':
           return await renderAskUserCard(params);
         default:
-          return `Unknown tool: ${name}`;
+          return `Error: unknown tool: ${name}`;
       }
     } catch (e) {
-      return `Tool error: ${e.message}`;
+      return `Error: ${e.message}`;
     }
   }
 
