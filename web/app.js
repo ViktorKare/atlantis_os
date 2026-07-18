@@ -11,12 +11,13 @@ async function api(method, path, body) {
   return ct.includes('json') ? r.json() : r.text();
 }
 
-const DEFAULT_OLLAMA_ENDPOINT = 'http://192.168.1.205:11434,http://192.168.1.251:11434,http://192.168.1.240:11434,http://localhost:11434';
+const DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434';
 let OLLAMA = DEFAULT_OLLAMA_ENDPOINT;
 let _ollamaHostCache = { url: null, ts: 0 };
 
 // Picks the first reachable host from a comma-separated endpoint setting
-// (default: 205 → 251 → 240 → localhost fallback chain), caching the winner for 20s.
+// (default: localhost only — real candidates come from settings.endpoint,
+// built server-side from network_hosts), caching the winner for 20s.
 async function resolveOllama() {
   const candidates = (OLLAMA || DEFAULT_OLLAMA_ENDPOINT).split(',').map(s => s.trim().replace(/\/$/, '')).filter(Boolean);
   if (candidates.length <= 1) return candidates[0] || 'http://localhost:11434';
@@ -5707,6 +5708,8 @@ async function checkAllHosts() {
     for (const h of hosts) {
       const mac = hostStatus[h.id] && hostStatus[h.id].mac;
       if (mac) h.mac = mac;
+      const gpuName = hostStatus[h.id] && hostStatus[h.id].gpuName;
+      if (gpuName) h.gpuName = gpuName;
     }
   } catch (_) { /* keep last known status */ }
 }
@@ -5738,7 +5741,7 @@ function renderHostList() {
     const statusCls   = st.ollamaRunning ? 'up' : st.online ? 'down' : 'offline';
     const statusLabel = st.ollamaRunning ? `Ollama up · ${st.modelCount}` : st.online ? 'Ollama down' : 'Offline';
     const osLabel  = h.os      ? HOST_OS_LABELS[h.os]   : 'Unknown';
-    const gpuLabel = h.gpuArch ? HOST_GPU_LABELS[h.gpuArch] : 'Unknown';
+    const gpuLabel = h.gpuName || (h.gpuArch ? HOST_GPU_LABELS[h.gpuArch] : 'Unknown');
     const capLabel = HOST_CAPACITY_LABELS[h.capacity] || 'Full';
     const ssh = sshCheckStatus[h.id];
     const sshPending = !!(ssh && ssh.pending);
@@ -5849,9 +5852,12 @@ async function checkSsh(id) {
   try {
     const res = await api('POST', `/api/hosts/${id}/check-ssh`);
     sshCheckStatus[id] = { ok: res.ok, ts: Date.now() };
-    if (res.mac) {
+    if (res.mac || res.gpuName) {
       const h = hosts.find(x => x.id === id);
-      if (h) h.mac = res.mac;
+      if (h) {
+        if (res.mac) h.mac = res.mac;
+        if (res.gpuName) h.gpuName = res.gpuName;
+      }
     }
   } catch (e) {
     sshCheckStatus[id] = { ok: false, ts: Date.now() };
