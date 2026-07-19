@@ -70,7 +70,7 @@ let models   = [];
 let agents   = [];
 let tasks    = [];
 const CODE_SERVER_DEFAULT = `${location.protocol}//${location.hostname}:5001`; // code-server always runs on the same host as this app
-let settings = { endpoint: OLLAMA, showTokenStats: true, showThinking: true, timeoutHours: 5, pipelineManagerModel: '', pipelineMaxRetries: 3, brainPrePrompt: '', agentPrePrompt: '', chatPrePrompt: '', codeServerUrl: CODE_SERVER_DEFAULT, defaultAgentId: '', defaultAgentIdFallback: '', userName: '', codeGhostTextTier: 'local', editErrorContentLimit: 8000 };
+let settings = { endpoint: OLLAMA, showTokenStats: true, showThinking: true, timeoutHours: 5, pipelineManagerModel: '', pipelineMaxRetries: 3, brainPrePrompt: '', agentPrePrompt: '', chatPrePrompt: '', codeServerUrl: CODE_SERVER_DEFAULT, defaultAgentId: '', defaultAgentIdFallback: '', userName: '', codeGhostTextTier: 'local', editErrorContentLimit: 8000, applyModel: '' };
 
 let abortController = null;
 let isGenerating    = false;
@@ -221,6 +221,9 @@ function initSettingsForm() {
   const editLimitEl = document.getElementById('setting-edit-error-content-limit');
   if (editLimitEl) editLimitEl.value = settings.editErrorContentLimit ?? 8000;
 
+  const applyModelEl = document.getElementById('setting-apply-model');
+  if (applyModelEl) applyModelEl.value = settings.applyModel || '';
+
   const embModelEl = document.getElementById('setting-embedding-model');
   if (embModelEl) embModelEl.value = settings.embeddingModel || 'nomic-embed-text';
   const skillThreshEl = document.getElementById('setting-skill-threshold');
@@ -245,6 +248,7 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
   settings.codeGhostTextTier    = document.getElementById('setting-code-ghost-tier')?.value || 'local';
   const editLimitVal = parseInt(document.getElementById('setting-edit-error-content-limit')?.value, 10);
   settings.editErrorContentLimit = Number.isNaN(editLimitVal) ? 8000 : editLimitVal;
+  settings.applyModel            = document.getElementById('setting-apply-model')?.value.trim() || '';
   settings.embeddingModel       = document.getElementById('setting-embedding-model')?.value.trim() || 'nomic-embed-text';
   const skillThreshVal = parseFloat(document.getElementById('setting-skill-threshold')?.value);
   settings.skillMatchThreshold  = Number.isNaN(skillThreshVal) ? 0.75 : skillThreshVal;
@@ -1471,7 +1475,7 @@ const TOOL_DEFS = {
   list_dir:    { type:'function', function:{ name:'list_dir',    description:'List directory contents', parameters:{ type:'object', properties:{ path:{ type:'string', description:'Directory path (empty = root)' }}, required:[] }}},
   web_search:  { type:'function', function:{ name:'web_search',  description:'Search the web with DuckDuckGo', parameters:{ type:'object', properties:{ query:{ type:'string' }}, required:['query'] }}},
   web_fetch:   { type:'function', function:{ name:'web_fetch',   description:'Fetch and return the text content of a URL', parameters:{ type:'object', properties:{ url:{ type:'string' }}, required:['url'] }}},
-  edit_file:   { type:'function', function:{ name:'edit_file',   description:'Replace an exact string in a file. old_string must occur exactly once (or set replace_all). Keep old_string minimal — only the line(s) actually changing plus a little unique surrounding context. Never pass a large chunk or the whole file: at that length even one dropped or misremembered character breaks the match.', parameters:{ type:'object', properties:{ path:{ type:'string' }, old_string:{ type:'string' }, new_string:{ type:'string' }, replace_all:{ type:'boolean' }}, required:['path','old_string','new_string'] }}},
+  edit_file:   { type:'function', function:{ name:'edit_file',   description:'Edit a file by writing the NEW version of just the region you are changing. Use a comment line containing "..." (e.g. "// ... existing code ...") for unchanged spans — everything you skip is kept as-is. START and END each region with 1-3 unchanged lines copied from the file; these anchor lines locate the region (close-enough copies are fine). For a pure insertion, include the existing line above AND below the insertion point. Separate multiple changed regions with a "..." marker line. Write only what the region should look like after the edit.', parameters:{ type:'object', properties:{ path:{ type:'string' }, edit:{ type:'string' }, instructions:{ type:'string', description:'One short sentence describing the intent of the change' }}, required:['path','edit'] }}},
   search_files:{ type:'function', function:{ name:'search_files',description:'Search file contents recursively (regex or literal). Returns file, line, matching text', parameters:{ type:'object', properties:{ pattern:{ type:'string' }, path:{ type:'string' }}, required:['pattern'] }}},
   http_request:{ type:'function', function:{ name:'http_request',description:'Make an HTTP request (any method/headers/body), works against localhost — use to test APIs', parameters:{ type:'object', properties:{ url:{ type:'string' }, method:{ type:'string' }, headers:{ type:'object' }, body:{ type:'string' }}, required:['url'] }}},
   run_command: { type:'function', function:{ name:'run_command', description:'Run a bash command; returns exit code, stdout, stderr (timeout max 120s)', parameters:{ type:'object', properties:{ command:{ type:'string' }, cwd:{ type:'string' }, timeout:{ type:'integer' }}, required:['command'] }}},
@@ -1510,7 +1514,7 @@ function buildToolManifest(toolPerms) {
   if (toolPerms.files) {
     lines.push('- **read_file** `{"path":"<rel-path>"}` — read a file');
     lines.push('- **write_file** `{"path":"<rel-path>","content":"<text>"}` — write a file');
-    lines.push('- **edit_file** `{"path":"<rel-path>","old_string":"<exact>","new_string":"<text>"}` — replace an exact string once. Keep old_string small: just the changing line(s) plus a bit of unique context, never a whole file or large block.');
+    lines.push('- **edit_file** `{"path":"<rel-path>","edit":"<new region content>"}` — write the NEW version of just the changing region; skip unchanged spans with a "// ... existing code ..." line and start/end each region with 1-3 unchanged anchor lines copied from the file.');
     lines.push('- **list_dir** `{"path":"<rel-path>"}` — list directory');
     lines.push('- **search_files** `{"pattern":"<regex>","path":"<dir>"}` — search file contents recursively');
   }

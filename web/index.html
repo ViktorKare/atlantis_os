@@ -632,8 +632,12 @@
               <select id="setting-code-ghost-tier"></select>
             </div>
             <div class="settings-field">
-              <label for="setting-edit-error-content-limit">Edit-failure feedback limit <span class="label-hint">(chars; current file content is shown back to the model when an edit's old_string fails to match, up to this size)</span></label>
+              <label for="setting-edit-error-content-limit">Edit-failure feedback limit <span class="label-hint">(chars; current file content is shown back to the model when an edit fails to merge, up to this size)</span></label>
               <input type="number" id="setting-edit-error-content-limit" min="0" max="100000" step="500">
+            </div>
+            <div class="settings-field">
+              <label for="setting-apply-model">Apply model <span class="label-hint">(merges an AI edit when its anchor lines can't be matched — an Ollama model name or a router tier; empty = chat's current model)</span></label>
+              <input type="text" id="setting-apply-model" placeholder="qwen2.5-coder:7b">
             </div>
           </div>
 
