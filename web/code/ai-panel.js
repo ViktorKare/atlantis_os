@@ -1,11 +1,13 @@
+import { mergeLazyEdit, stripFence, applyOutputProblem, suspiciousRewrite } from './edit-merge.js';
+
 const CODE_TOOL_DEFS = {
   read_file:    { type:'function', function:{ name:'read_file',    description:'Read the contents of a file', parameters:{ type:'object', properties:{ path:{ type:'string' } }, required:['path'] } } },
   list_dir:     { type:'function', function:{ name:'list_dir',     description:'List directory contents', parameters:{ type:'object', properties:{ path:{ type:'string' } }, required:[] } } },
   search_files: { type:'function', function:{ name:'search_files', description:'Search file contents recursively (regex or literal)', parameters:{ type:'object', properties:{ pattern:{ type:'string' }, path:{ type:'string' } }, required:['pattern'] } } },
   run_command:  { type:'function', function:{ name:'run_command',  description:'Run a bash command in the code root; returns exit code, stdout, stderr (timeout max 120s)', parameters:{ type:'object', properties:{ command:{ type:'string' }, cwd:{ type:'string' }, timeout:{ type:'integer' } }, required:['command'] } } },
-  propose_edit:     { type:'function', function:{ name:'propose_edit',     description:'Propose replacing an exact string in the currently open file. old_string must occur exactly once (or set replace_all). Keep old_string minimal — only the line(s) actually changing plus a little unique surrounding context. Never pass a large chunk or the whole file: at that length even one dropped or misremembered character breaks the match. Shown to the user as a reviewable diff, not applied immediately unless auto-accept is on.', parameters:{ type:'object', properties:{ path:{ type:'string' }, old_string:{ type:'string' }, new_string:{ type:'string' }, replace_all:{ type:'boolean' } }, required:['path','old_string','new_string'] } } },
+  propose_edit:     { type:'function', function:{ name:'propose_edit',     description:'Edit a file by writing the NEW version of just the region you are changing. Use a comment line containing "..." (e.g. "// ... existing code ...") for unchanged spans — everything you skip is kept as-is. START and END each region with 1-3 unchanged lines copied from the file; these anchor lines locate the region (close-enough copies are fine). For a pure insertion, include the existing line above AND below the insertion point. Separate multiple changed regions with a "..." marker line. Write only what the region should look like after the edit. Shown to the user as a reviewable diff, not applied immediately unless auto-accept is on.', parameters:{ type:'object', properties:{ path:{ type:'string' }, edit:{ type:'string' }, instructions:{ type:'string', description:'One short sentence describing the intent of the change' } }, required:['path','edit'] } } },
   propose_new_file: { type:'function', function:{ name:'propose_new_file', description:'Propose creating a new file with the given content. Shown to the user as a reviewable diff against an empty file, not applied immediately unless auto-accept is on.', parameters:{ type:'object', properties:{ path:{ type:'string' }, content:{ type:'string' } }, required:['path','content'] } } },
-  propose_rewrite:  { type:'function', function:{ name:'propose_rewrite',  description:'Propose replacing the ENTIRE contents of an existing file with new content. content REPLACES the file byte-for-byte — it must be the complete file, unchanged parts included in full. Never write a placeholder/comment like "rest of the file stays the same" instead of the actual unchanged content: there is no such thing as "the rest" here, anything not literally in content is deleted. If you are only changing a small part of a large file, use propose_edit instead — do not reach for propose_rewrite just to avoid reproducing old_string exactly. Always shown to the user for manual review, regardless of auto-accept. Set confirm_large_deletion:true only if you are intentionally removing most of the file\'s content.', parameters:{ type:'object', properties:{ path:{ type:'string' }, content:{ type:'string' }, confirm_large_deletion:{ type:'boolean' } }, required:['path','content'] } } },
+  propose_rewrite:  { type:'function', function:{ name:'propose_rewrite',  description:'Propose replacing the ENTIRE contents of an existing file with new content. content REPLACES the file byte-for-byte — it must be the complete file, unchanged parts included in full. Never write a placeholder/comment like "rest of the file stays the same" instead of the actual unchanged content: there is no such thing as "the rest" here, anything not literally in content is deleted. If you are only changing a small part of a large file, use propose_edit instead — rarely is a full rewrite the right tool. Always shown to the user for manual review, regardless of auto-accept. Set confirm_large_deletion:true only if you are intentionally removing most of the file\'s content.', parameters:{ type:'object', properties:{ path:{ type:'string' }, content:{ type:'string' }, confirm_large_deletion:{ type:'boolean' } }, required:['path','content'] } } },
   ask_user:     { type:'function', function:{ name:'ask_user',     description:'Ask the user a clarifying question with clickable options and/or free text. Blocks until they answer.', parameters:{ type:'object', properties:{ question:{ type:'string' }, options:{ type:'array', items:{ type:'string' } }, allow_multiple:{ type:'boolean' }, allow_free_text:{ type:'boolean' } }, required:['question'] } } },
 };
 
@@ -22,15 +24,15 @@ function buildCodeToolManifest(toolPerms) {
   const lines = ['## Tools available', 'ask_user is always available to pause and ask the user a question.'];
   if (toolPerms.files) {
     lines.push('- **read_file**, **list_dir**, **search_files** — read-only, run immediately');
-    lines.push('- **propose_edit** / **propose_new_file** — edits are shown to the user for review, not applied immediately unless auto-accept is on. Keep propose_edit\'s old_string small: just the changing line(s) plus a bit of unique context, never a whole file or large block.');
-    lines.push('- **propose_rewrite** — replaces a whole existing file; content must be the COMPLETE file, never a placeholder for unchanged parts. Reach for this if propose_edit just failed to match, but prefer propose_edit for small changes.');
+    lines.push('- **propose_edit** / **propose_new_file** — edits are shown to the user for review, not applied immediately unless auto-accept is on. propose_edit takes the NEW content of the changed region: skip unchanged spans with a "// ... existing code ..." line, and start/end each region with 1-3 unchanged anchor lines copied from the file.');
+    lines.push('- **propose_rewrite** — replaces a whole existing file; content must be the COMPLETE file, never a placeholder for unchanged parts. Rarely needed — prefer propose_edit for anything short of a full rewrite.');
   }
   if (toolPerms.shell) lines.push('- **run_command** — runs immediately in the code root');
   return lines.join('\n');
 }
 
-// Settings-tab-configurable size cap (chars) for echoing a file's current content back in a
-// propose_edit error — see 'Edit-failure feedback limit' under Code editor.
+// Settings-tab-configurable size cap (chars) for echoing a file's current content back
+// when a propose_edit fails to merge — see 'Edit-failure feedback limit' under Code editor.
 async function editErrorContentLimit() {
   try {
     const s = await api('GET', '/api/settings');
@@ -38,88 +40,6 @@ async function editErrorContentLimit() {
   } catch (_) {
     return 8000;
   }
-}
-
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-// Builds a regex matching `s` with every run of whitespace (spaces, tabs, newlines) treated
-// as interchangeable with any other run of whitespace — handles indentation drift, reflowed
-// line breaks (e.g. a multi-line block flattened to one line), and incidental blank-line
-// differences, all in a single pass, without requiring the same number of lines on both sides.
-function wsAgnosticPattern(s) {
-  const parts = [];
-  let last = 0;
-  const re = /\s+/g;
-  let m;
-  while ((m = re.exec(s))) {
-    parts.push(escapeRegExp(s.slice(last, m.index)));
-    parts.push('\\s+');
-    last = re.lastIndex;
-  }
-  parts.push(escapeRegExp(s.slice(last)));
-  return parts.join('');
-}
-
-// Catches the classic "lazy full rewrite" failure: a model asked for the entire new file
-// content instead writes a placeholder referring back to content it isn't actually including
-// (e.g. "<!-- the rest of the content remains below -->"). Since propose_rewrite replaces the
-// whole file verbatim, such a placeholder doesn't preserve anything — it deletes everything
-// except itself. No legitimate full rewrite should ever contain one of these phrases.
-const LAZY_PLACEHOLDER_RE = /(rest of (the )?(file|content|code|document)|remains?\s+(the\s+same|unchanged|below|above)|existing code (goes|stays|remains)|unchanged\s+(above|below)|content\s+(goes|will go|continues)\s+here|\.\.\.\s*(existing|rest|unchanged)|\[unchanged\])/i;
-
-function suspiciousRewrite(oldContent, newContent) {
-  if (LAZY_PLACEHOLDER_RE.test(newContent)) {
-    return 'This looks like it contains a placeholder comment (e.g. "the rest of the content remains below") instead of the actual content. propose_rewrite replaces the ENTIRE file verbatim — there is no way to reference "the rest" of the old content, whatever is not literally included WILL be deleted. Use propose_edit for a small targeted change instead, or resubmit propose_rewrite with the complete file content (unchanged parts included in full).';
-  }
-  if (oldContent && oldContent.length > 200 && newContent.length < oldContent.length * 0.4) {
-    return `New content (${newContent.length} chars) is much shorter than the file's current content (${oldContent.length} chars) — this looks like accidental truncation rather than an intentional rewrite. If a large deletion is really intended, resubmit with confirm_large_deletion:true. Otherwise use propose_edit for just the part that's changing, or include the full original content here.`;
-  }
-  return null;
-}
-
-// Mirrors agent/worker.py's _edit_file_content: exact match first, falling back to a
-// whitespace-agnostic match (leading, trailing, and internal whitespace/line breaks all
-// treated as interchangeable) when the exact string isn't found — the most common accidental
-// mismatch, especially with models that reformat or reflow text instead of copying it
-// verbatim. Returns { content } or { error }.
-function resolveEditReplacement(oldContent, oldString, newString, replaceAll) {
-  const count = oldContent.split(oldString).length - 1;
-  if (count === 1 || (count > 1 && replaceAll)) {
-    return { content: replaceAll ? oldContent.split(oldString).join(newString) : oldContent.replace(oldString, newString) };
-  }
-
-  if (count === 0) {
-    const re = new RegExp(wsAgnosticPattern(oldString), 'g');
-    const matches = [];
-    let m;
-    while ((m = re.exec(oldContent))) {
-      matches.push(m);
-      if (m[0].length === 0) re.lastIndex++;
-    }
-    if (matches.length === 1) {
-      const m = matches[0];
-      return { content: oldContent.slice(0, m.index) + newString + oldContent.slice(m.index + m[0].length) };
-    }
-    if (matches.length > 1) {
-      return { error: `old_string matches ${matches.length} places when ignoring whitespace differences — add more surrounding context to make it unique, or set replace_all=true` };
-    }
-    return { error: 'old_string not found in file, even after ignoring whitespace differences.' };
-  }
-
-  const fileLines = oldContent.split('\n');
-  let lineNums = null;
-  if (!oldString.includes('\n')) {
-    lineNums = [];
-    fileLines.forEach((l, i) => { if (l.includes(oldString)) lineNums.push(i + 1); });
-  }
-  if (lineNums && lineNums.length) {
-    const shown = lineNums.slice(0, 8).join(', ');
-    const more = lineNums.length > 8 ? ` (+${lineNums.length - 8} more)` : '';
-    return { error: `old_string occurs ${count} times, at lines ${shown}${more} — add surrounding context to make it unique, or set replace_all=true` };
-  }
-  return { error: `old_string occurs ${count} times — add surrounding context to make it unique, or set replace_all=true` };
 }
 
 // ── Thinking indicator ──────────────────────────────────────────────────────
@@ -503,6 +423,44 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     }
   }
 
+  const APPLY_SYSTEM_PROMPT = 'You are a code-merge engine. Apply the EDIT to the FILE CONTENT. The EDIT shows the new version of one or more regions of the file; lines containing "..." (e.g. "// ... existing code ...") mark unchanged spans that must be kept exactly as they are in the file. Output the COMPLETE merged file content and nothing else — no explanations, no markdown code fences.';
+
+  // LLM fallback when the deterministic merge refuses (mirrors _apply_model_merge in
+  // agent/worker.py). applyModel setting: router tier name or explicit Ollama model id;
+  // empty → the panel's current chat model. Returns { content } or { reason }.
+  async function applyModelMerge(fileContent, edit, instructions) {
+    try {
+      const s = await api('GET', '/api/settings').catch(() => ({}));
+      const val = String(s?.applyModel || '').trim();
+      let model = val;
+      let router = {};
+      try { router = JSON.parse(s?.model_router || '{}'); } catch (_) {}
+      const tier = router.tiers?.[val];
+      if (tier) {
+        if ((tier.provider || 'ollama') !== 'ollama') {
+          return { reason: 'skipped (apply model tier is not an Ollama model — the editor panel can only call Ollama directly)' };
+        }
+        model = tier.model || '';
+      }
+      if (!model) model = modelSelect.value;
+      if (!model) return { reason: 'skipped (no apply model available)' };
+      const messages = [
+        { role: 'system', content: APPLY_SYSTEM_PROMPT },
+        { role: 'user', content: `FILE CONTENT:\n\`\`\`\n${fileContent}\n\`\`\`\n\nEDIT:\n\`\`\`\n${edit}\n\`\`\`` + (instructions ? `\n\nINTENT: ${instructions}` : '') },
+      ];
+      let out = '';
+      for await (const chunk of aiProvider.chat({ messages, model })) {
+        if (typeof chunk === 'string') out += chunk;
+      }
+      const merged = stripFence(out);
+      const problem = applyOutputProblem(fileContent, merged);
+      if (problem) return { reason: `failed (${problem})` };
+      return { content: merged };
+    } catch (e) {
+      return { reason: `failed (${e.message})` };
+    }
+  }
+
   // Every failure path returns a string starting with "Error:" — finishToolBlock() (app.js)
   // keys off that prefix to show a red "Error" status instead of "Done", so a failed tool
   // call is visibly distinguishable in the transcript even if the model's own reply doesn't
@@ -536,18 +494,28 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
           if (editorCtrl.getActiveFile() !== params.path) await editorCtrl.openFile(params.path);
           const oldContent = (await fileProvider.read(params.path).catch(() => null));
           if (oldContent == null) return `Error: could not read ${params.path}`;
-          if (!params.old_string) return 'Error: old_string is required';
-          const resolved = resolveEditReplacement(oldContent, params.old_string, params.new_string, params.replace_all);
-          if (resolved.error) {
-            // Ground the model's next retry in the real content instead of leaving it to
-            // guess again from stale/misremembered context.
-            const limit = await editErrorContentLimit();
-            const hint = oldContent.length <= limit
-              ? `\n\nCurrent actual content of ${params.path}:\n\`\`\`\n${oldContent}\n\`\`\``
-              : `\n\nFile is large (${oldContent.length} chars) — call read_file on ${params.path} to see the current content before retrying, or use propose_rewrite instead.`;
-            return `Error: ${resolved.error}${hint}`;
+          if (!params.edit) return 'Error: edit is required — write the new content of the region you are changing, with "// ... existing code ..." marker lines around unchanged spans';
+          let merged = mergeLazyEdit(oldContent, params.edit);
+          if (merged.error) return `Error: ${merged.error}`;
+          let viaApplyModel = false;
+          if (merged.refusal) {
+            const fb = await applyModelMerge(oldContent, params.edit, params.instructions || '');
+            if (fb.content != null) {
+              merged = { content: fb.content };
+              viaApplyModel = true;
+            } else {
+              // Ground the model's next retry in the real content instead of leaving it to
+              // guess again from stale/misremembered context.
+              const limit = await editErrorContentLimit();
+              const hint = oldContent.length <= limit
+                ? `\n\nCurrent actual content of ${params.path}:\n\`\`\`\n${oldContent}\n\`\`\``
+                : `\n\nFile is large (${oldContent.length} chars) — call read_file on ${params.path} to see the current content before retrying.`;
+              return `Error: could not locate the edited region (${merged.refusal}); fallback merge ${fb.reason}.${hint}`;
+            }
           }
-          const { applied, hunkCount } = await editorCtrl.proposeDiff(resolved.content, { autoAccept });
+          // Apply-model output skips auto-accept: it's model-generated whole-file content,
+          // so it gets rewrite-grade manual review rather than the targeted-edit fast path.
+          const { applied, hunkCount } = await editorCtrl.proposeDiff(merged.content, { autoAccept: viaApplyModel ? false : autoAccept });
           return applied ? `Applied ${hunkCount} hunk(s) to ${params.path}`
             : `NOT applied yet: ${hunkCount} hunk(s) proposed to ${params.path} and shown to the user for review in the editor. ` +
               `Do not tell the user the file has been changed — it hasn't, until they accept the hunk(s) themselves.`;
