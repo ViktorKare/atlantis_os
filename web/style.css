@@ -406,6 +406,14 @@ body::before {
   vertical-align: middle;
 }
 
+.party-diagnostic-error {
+  color: var(--danger);
+  border: 1px solid rgba(224, 92, 107, 0.35);
+  background: rgba(224, 92, 107, 0.1);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
 #thread-list, #agent-list, #task-list, #plan-list, #skill-list {
   list-style: none;
   overflow-y: auto;

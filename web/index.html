@@ -95,6 +95,15 @@
             <line x1="6" y1="18" x2="6.01" y2="18"/>
           </svg>
         </button>
+
+        <button class="nav-btn" data-section="party" title="Party">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+            <circle cx="9" cy="7" r="4"/>
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+          </svg>
+        </button>
       </div>
       <div class="nav-bottom">
         <button class="nav-btn" data-section="settings" title="Settings">
@@ -543,6 +552,89 @@
         </div>
       </div>
       <div id="hosts-grid"></div>
+    </div>
+
+    <!-- ── Party ─────────────────────────────────────────────── -->
+    <div id="section-party" class="section">
+      <div id="party-toolbar">
+        <h2>Party</h2>
+      </div>
+
+      <div id="party-status-panel" class="editor-form">
+        <div class="editor-field">
+          <label>This device</label>
+          <div id="party-status-summary" class="editor-hint">Loading…</div>
+        </div>
+      </div>
+
+      <div id="party-become-host" class="editor-form">
+        <div class="editor-section-label">Become party host</div>
+        <div class="editor-hint">Runs Headscale on this device, reachable via a free <a href="https://www.duckdns.org/" target="_blank" rel="noopener">DuckDNS</a> hostname and a real, trusted HTTPS certificate — no third-party tunnel service, no cost. This does mean your router will be forwarding one port to this machine directly (instructions below) — the DuckDNS hostname keeps tracking your home IP automatically even if your ISP changes it. The certificate itself is obtained via DNS-01 validation (a TXT record, not a port fetch), so this works even if your ISP blocks inbound port 80, as many do.</div>
+        <div class="editor-hint">
+          What to expect along the way: on Windows, up to <strong>two</strong> admin-approval (UAC) popups — one for Docker Desktop, one for the Tailscale client — just click Yes; and, only on a genuinely fresh machine, a possible one-time Windows restart if this is the first time virtualization features are being turned on. Nothing here requires manually downloading or moving any files yourself.
+        </div>
+        <div id="party-diagnostic" class="editor-hint" hidden></div>
+
+        <div class="editor-field">
+          <label>DuckDNS domain <span class="label-hint">(from duckdns.org — just the name, e.g. "myparty")</span></label>
+          <input type="text" id="party-duckdns-domain" placeholder="myparty">
+        </div>
+        <div class="editor-field">
+          <label>DuckDNS token <span class="label-hint">(shown on your duckdns.org account page)</span></label>
+          <input type="password" id="party-duckdns-token" placeholder="token">
+        </div>
+        <div class="editor-field">
+          <label>Email <span class="label-hint">(for Let's Encrypt certificate expiry notices only)</span></label>
+          <input type="email" id="party-acme-email" placeholder="you@example.com">
+        </div>
+
+        <div id="party-port-forward-hint" class="editor-hint">
+          Before clicking "Finish setup", forward this on your router (external → this device's internal IP):
+          <ul>
+            <li>WAN port <strong>443</strong> (TCP) → this device, port <strong id="party-public-port">8443</strong></li>
+          </ul>
+          This is the one genuinely manual step — router admin pages vary too much to automate. Your router's admin page usually calls this "Port Forwarding" or "Virtual Server" (check for a "Hairpin NAT"/"NAT loopback" option too, and enable it if present — it lets this same device reach itself through the public hostname, which self-join below needs).
+        </div>
+
+        <div class="editor-actions">
+          <button id="party-step-install" class="btn-sm">1. Install</button>
+          <button id="party-step-finalize" class="btn-sm" disabled>2. Finish setup</button>
+        </div>
+        <div id="party-wizard-status" class="editor-hint"></div>
+      </div>
+
+      <div id="party-invite-section" class="editor-form" hidden>
+        <div class="editor-section-label">Invite a friend</div>
+        <div class="editor-field">
+          <label>Friend's name <span class="label-hint">(for your own reference only)</span></label>
+          <input type="text" id="party-invite-name" placeholder="e.g. Alex">
+          <button id="party-invite-btn" class="btn-primary">Create invite</button>
+        </div>
+        <div id="party-invite-result" hidden>
+          <label>Invite link <span class="label-hint">(paste into their Atlantis "Join a party" box)</span></label>
+          <textarea id="party-invite-blob" rows="3" readonly></textarea>
+          <button class="btn-sm party-copy-btn" data-target="party-invite-blob">Copy</button>
+          <label>Or the raw command</label>
+          <textarea id="party-invite-cli" rows="2" readonly></textarea>
+          <button class="btn-sm party-copy-btn" data-target="party-invite-cli">Copy</button>
+        </div>
+      </div>
+
+      <div id="party-join-section" class="editor-form">
+        <div class="editor-section-label">Join a party</div>
+        <div class="editor-field">
+          <label>Invite link</label>
+          <textarea id="party-join-blob" rows="3" placeholder="Paste the invite here…"></textarea>
+          <button id="party-join-btn" class="btn-primary">Join</button>
+        </div>
+        <div id="party-join-status" class="editor-hint"></div>
+      </div>
+
+      <div id="party-migrate-section" class="editor-form" hidden>
+        <div class="editor-section-label">Migrate host role</div>
+        <div class="editor-hint">Move the party host role to a different device already in your Hosts list.</div>
+        <div id="party-migrate-targets"></div>
+      </div>
     </div>
 
     <!-- ── Settings ──────────────────────────────────────────── -->

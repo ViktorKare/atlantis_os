@@ -148,6 +148,7 @@ function switchSection(name) {
   if (name === 'debug')    { initDebug(); loadBrainPanel(); }
   if (name === 'models')   initModels();
   if (name === 'hosts')    initHosts();
+  if (name === 'party')    initParty();
   if (name === 'code')     initCode();
   if (name === 'settings') loadSettings().then(initSettingsForm);
 }
@@ -5898,6 +5899,180 @@ async function checkSsh(id) {
     sshCheckStatus[id] = { ok: false, ts: Date.now() };
   }
   renderHostList();
+}
+
+// ── Party ─────────────────────────────────────────────────────────────────
+const partyUI = { inited: false, status: null };
+
+function initParty() {
+  if (!partyUI.inited) {
+    partyUI.inited = true;
+    document.getElementById('party-step-install').addEventListener('click', partyStepInstall);
+    document.getElementById('party-step-finalize').addEventListener('click', partyStepFinalize);
+    document.getElementById('party-invite-btn').addEventListener('click', partyCreateInvite);
+    document.getElementById('party-join-btn').addEventListener('click', partyJoin);
+    document.querySelectorAll('.party-copy-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const el = document.getElementById(btn.dataset.target);
+        el.select();
+        navigator.clipboard?.writeText(el.value).catch(() => {});
+      });
+    });
+  }
+  loadPartyStatus();
+}
+
+async function loadPartyStatus() {
+  let status;
+  try { status = await api('GET', '/api/party/status'); }
+  catch { status = null; }
+  partyUI.status = status;
+  renderPartyPanel();
+}
+
+function renderPartyPanel() {
+  const s = partyUI.status;
+  const summary = document.getElementById('party-status-summary');
+  if (!s) { summary.textContent = 'Could not load party status.'; return; }
+
+  const becomeHostPanel = document.getElementById('party-become-host');
+  const inviteSection   = document.getElementById('party-invite-section');
+  const migrateSection  = document.getElementById('party-migrate-section');
+
+  if (s.partyRole === 'host') {
+    summary.innerHTML = `Party host &middot; mode: ${escHtml(s.partyHostMode || '?')} &middot; ` +
+      `Headscale ${s.headscaleResponds ? 'running' : 'not responding'} &middot; ` +
+      escHtml(s.headscaleUrl || 'no public URL yet');
+    becomeHostPanel.hidden = true;
+    inviteSection.hidden = false;
+    migrateSection.hidden = false;
+    loadHosts().then(renderPartyMigrateTargets);
+  } else {
+    summary.innerHTML = `Not a party host (${escHtml(s.os)}/${escHtml(s.arch || 'unknown arch')}) &mdash; ` +
+      (s.os === 'windows' ? 'host role runs via Docker Desktop here.' : 'host role installs native binaries here.');
+    becomeHostPanel.hidden = false;
+    inviteSection.hidden = true;
+    migrateSection.hidden = true;
+
+    document.getElementById('party-step-finalize').disabled  = !s.binariesInstalled;
+    if (s.headscalePublicPort) document.getElementById('party-public-port').textContent = s.headscalePublicPort;
+    const domainInput = document.getElementById('party-duckdns-domain');
+    if (s.duckdnsDomain && !domainInput.value) domainInput.value = s.duckdnsDomain;
+
+    renderPartyDiagnostic(s);
+  }
+}
+
+function renderPartyDiagnostic(s) {
+  const box = document.getElementById('party-diagnostic');
+  if (s.os !== 'windows') { box.hidden = true; return; }
+
+  if (s.virtualizationEnabled === false) {
+    box.hidden = false;
+    box.className = 'editor-hint party-diagnostic-error';
+    box.innerHTML = '<strong>CPU virtualization is disabled in BIOS/UEFI.</strong> Docker Desktop cannot run without it — ' +
+      'no installer can fix this. Restart, enter BIOS setup (commonly Del, F2, F10, or F12 during boot), enable ' +
+      '"Intel VT-x" / "Virtualization Technology" (or "SVM Mode" on AMD) under Advanced &rarr; CPU Configuration, ' +
+      'save, and reboot before continuing.';
+  } else if (s.dockerDesktopInstalled && !s.dockerAvailable) {
+    box.hidden = false;
+    box.className = 'editor-hint';
+    box.textContent = 'Docker Desktop is installed but not responding yet — open it manually once, or restart Windows if it was just installed (first-time Windows feature activation can need a reboot).';
+  } else {
+    box.hidden = true;
+  }
+}
+
+function partyWizardStatus(msg, isError = false) {
+  const el = document.getElementById('party-wizard-status');
+  el.textContent = msg;
+  el.style.color = isError ? 'var(--danger)' : '';
+}
+
+async function partyStepInstall() {
+  partyWizardStatus('Installing… a Windows admin-approval prompt may appear — click Yes.');
+  try {
+    const res = await api('POST', '/api/party/host/install');
+    if (res.error) return partyWizardStatus(res.error, true);
+    if (res.restartRequired) {
+      partyWizardStatus('Docker Desktop installed — restart Windows, then come back and click "1. Install" again to finish.', true);
+    } else {
+      partyWizardStatus(`Installed (${res.mode} mode).`);
+    }
+  } catch (e) { partyWizardStatus(e.message, true); }
+  await loadPartyStatus();
+}
+
+async function partyStepFinalize() {
+  const duckdnsDomain = document.getElementById('party-duckdns-domain').value.trim();
+  const duckdnsToken  = document.getElementById('party-duckdns-token').value.trim();
+  const acmeEmail     = document.getElementById('party-acme-email').value.trim();
+  if (!duckdnsDomain || !duckdnsToken || !acmeEmail) {
+    return partyWizardStatus('Fill in the DuckDNS domain, token, and email first.', true);
+  }
+  partyWizardStatus('Finishing setup — updating DuckDNS, starting Headscale, and requesting a real HTTPS certificate. This can take a bit, especially the certificate step…');
+  try {
+    const res = await api('POST', '/api/party/host/finalize', { duckdnsDomain, duckdnsToken, acmeEmail });
+    if (res.error) return partyWizardStatus(res.error, true);
+    let msg = `Party host is live at ${res.headscaleUrl}`;
+    if (res.selfJoinError) msg += ` — but this device could not join its own party yet: ${res.selfJoinError}`;
+    partyWizardStatus(msg, !!res.selfJoinError);
+  } catch (e) { partyWizardStatus(e.message, true); }
+  await loadPartyStatus();
+}
+
+async function partyCreateInvite() {
+  const friendName = document.getElementById('party-invite-name').value.trim();
+  try {
+    const res = await api('POST', '/api/party/invite', { friendName });
+    if (res.error) return alert(res.error);
+    document.getElementById('party-invite-result').hidden = false;
+    document.getElementById('party-invite-blob').value = res.inviteBlob;
+    document.getElementById('party-invite-cli').value = res.cliCommand;
+  } catch (e) { alert(e.message); }
+}
+
+async function partyJoin() {
+  const blob = document.getElementById('party-join-blob').value.trim();
+  const statusEl = document.getElementById('party-join-status');
+  if (!blob) { statusEl.textContent = 'Paste an invite first.'; return; }
+  statusEl.textContent = 'Joining…';
+  try {
+    const res = await api('POST', '/api/party/join', { inviteBlob: blob });
+    if (res.error) { statusEl.textContent = res.error; return; }
+    statusEl.textContent = `Joined — added ${res.hostsAdded} host(s) to your Hosts tab.`;
+    await loadHosts();
+  } catch (e) { statusEl.textContent = e.message; }
+}
+
+function renderPartyMigrateTargets() {
+  const box = document.getElementById('party-migrate-targets');
+  if (!hosts.length) {
+    box.innerHTML = '<p class="empty-state">No other hosts known yet — add one in the Hosts tab, or invite a friend first.</p>';
+    return;
+  }
+  box.innerHTML = hosts.map(h => `
+    <div class="host-card">
+      <div class="host-card-top"><span class="host-name">${escHtml(h.name)}</span></div>
+      <div class="host-ip">${escHtml(h.ip)}</div>
+      <button class="btn-sm party-migrate-btn" data-id="${h.id}">Migrate host role here</button>
+    </div>`).join('');
+  box.querySelectorAll('.party-migrate-btn').forEach(btn => {
+    btn.addEventListener('click', () => partyMigrate(btn.dataset.id));
+  });
+}
+
+async function partyMigrate(targetHostId) {
+  if (!confirm('Move the party host role to this device? This sets up Headscale on the new device and stops it here once the new one is confirmed reachable.')) return;
+  try {
+    const res = await api('POST', '/api/party/migrate', { targetHostId });
+    if (res.error) { alert(res.error); return; }
+    let msg = `Migration complete. Party URL unchanged: ${res.headscaleUrl}`;
+    if (res.newHostLanIp) msg += `\n\nNew host's LAN IP: ${res.newHostLanIp}`;
+    if (res.note) msg += `\n\n${res.note}`;
+    alert(msg);
+    await loadPartyStatus();
+  } catch (e) { alert(e.message); }
 }
 
 init();

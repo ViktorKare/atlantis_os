@@ -4,7 +4,7 @@ Ollama UI — local server + SQLite persistence + task scheduler.
 Run with: python3 server.py
 """
 from __future__ import annotations
-import json, os, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib, concurrent.futures, socket, shlex
+import json, os, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib, concurrent.futures, socket, shlex, base64, uuid
 from pathlib import Path
 
 BASE_DIR       = Path(__file__).parent           # server/
@@ -25,6 +25,8 @@ sys.path.insert(0, str(ROOT_DIR))
 from logging_setup import setup_logging, install_crash_handler
 logger = setup_logging('server')
 install_crash_handler('server', logger)
+
+import party  # server/party.py — same directory, no path hacking needed
 
 def load_config():
     if not CONFIG_FILE.exists():
@@ -304,6 +306,7 @@ def init_db():
             'ALTER TABLE pipelines ADD COLUMN max_turns      INTEGER NOT NULL DEFAULT 20',
             'ALTER TABLE pipelines ADD COLUMN work_dir       TEXT',
             'ALTER TABLE network_hosts ADD COLUMN gpu_name TEXT',
+            'ALTER TABLE network_hosts ADD COLUMN via_party TEXT',
         ]:
             try:
                 db.execute(sql)
@@ -711,6 +714,80 @@ def scheduler_loop():
           _scheduler_tick(now)
         except Exception as e:
             logger.error(f'[scheduler] tick error (will retry next minute): {e}')
+        try:
+            _party_duckdns_tick(now)
+        except Exception as e:
+            logger.error(f'[party] DuckDNS tick error (will retry next minute): {e}')
+        try:
+            _party_cert_renewal_tick(now)
+        except Exception as e:
+            logger.error(f'[party] Certificate renewal tick error (will retry next minute): {e}')
+
+
+def _party_settings_row(db, key):
+    row = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+    return json.loads(row['value']) if row else None
+
+
+def _party_duckdns_tick(now):
+    """Keeps the DuckDNS record pointing at this machine's current public IP
+    — home internet connections don't get a static IP, so without this the
+    party's public hostname would silently go stale after any ISP-side
+    reassignment. Every 5 minutes is plenty (DuckDNS itself has no documented
+    rate limit issue at this cadence) without hammering it every tick."""
+    if now.minute % 5 != 0:
+        return
+    with get_db() as db:
+        role   = _party_settings_row(db, 'partyRole')
+        domain = _party_settings_row(db, 'duckdnsDomain')
+        token  = _party_settings_row(db, 'duckdnsToken')
+    if role != 'host' or not domain or not token:
+        return
+    r = party.update_duckdns(domain, token)
+    if r.get('error'):
+        logger.error(f'[party] DuckDNS refresh failed: {r["error"]}')
+
+
+def _party_cert_renewal_tick(now):
+    """Let's Encrypt certs are valid 90 days — re-issue with a comfortable
+    margin (party.CERT_RENEWAL_AFTER_DAYS) rather than waiting until near
+    expiry, so a transient DNS-01/network hiccup on any given day has plenty
+    of runway to retry before the current cert actually lapses. Checked once
+    an hour; the actual issuance itself is cheap to skip when not due."""
+    if now.minute != 0:
+        return
+    with get_db() as db:
+        role        = _party_settings_row(db, 'partyRole')
+        domain      = _party_settings_row(db, 'duckdnsDomain')
+        token       = _party_settings_row(db, 'duckdnsToken')
+        email       = _party_settings_row(db, 'acmeEmail')
+        issued_at_s = _party_settings_row(db, 'certIssuedAt')
+    if role != 'host' or not domain or not token or not email:
+        return
+    if issued_at_s:
+        try:
+            issued_at = datetime.datetime.fromisoformat(issued_at_s)
+            if (now - issued_at).days < party.CERT_RENEWAL_AFTER_DAYS:
+                return
+        except ValueError:
+            pass  # malformed timestamp — treat as due for renewal rather than never renewing
+    logger.info(f'[party] Certificate renewal due for {domain}, issuing...')
+    r = party.issue_certificate_dns01(domain, email, token)
+    if r.get('error'):
+        logger.error(f'[party] Certificate renewal failed: {r["error"]}')
+        return
+    with get_db() as db:
+        db.execute('INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)',
+                   ('certIssuedAt', json.dumps(now.isoformat())))
+        mode = _party_settings_row(db, 'partyHostMode')
+    # New cert on disk, but headscale only reads it at startup — restart to
+    # pick it up. Docker mode: brief restart, no config regeneration needed
+    # (tls_cert_path/tls_key_path point at the same files, just refreshed).
+    if mode == 'docker':
+        subprocess.run(['docker', 'restart', party.HEADSCALE_CONTAINER], capture_output=True)
+    else:
+        (DATA_DIR / '.restart').touch()
+    logger.info(f'[party] Certificate renewed for {domain}')
 
 def _scheduler_tick(now):
     with get_db() as db:
@@ -840,6 +917,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p == '/api/code-session':      self._get_code_session()
         elif p == '/api/code-layouts':      self._get_code_layouts()
         elif p == '/api/code-layout-state': self._get_code_layout_state()
+        elif p == '/api/party/status':      self._get_party_status()
+        elif p == '/api/party/members-internal': self._get_party_members_internal()
         else:
             super().do_GET()
 
@@ -889,6 +968,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p == '/api/system/update':     self._post_system_update(body)
         elif p == '/api/system/restart':    self._post_system_restart()
         elif p == '/api/system/stop':       self._post_system_stop()
+        elif p == '/api/party/host/install':         self._post_party_install()
+        elif p == '/api/party/host/finalize':         self._post_party_finalize(body)
+        elif p == '/api/party/invite':                self._post_party_invite(body)
+        elif p == '/api/party/join':                  self._post_party_join(body)
+        elif p == '/api/party/sync-roster':           self._post_party_sync_roster()
+        elif p == '/api/party/migrate':               self._post_party_migrate(body)
         else:
             self.send_error(404)
 
@@ -1324,6 +1409,347 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 with get_db() as db:
                     db.execute('UPDATE network_hosts SET gpu_name=? WHERE id=?', (gpu_name, id))
         self._json({'ok': ok, 'error': error, 'mac': mac, 'gpuName': gpu_name})
+
+    # ── Party ───────────────────────────────────────────────────────────────
+    # Pooling compute across physically separate networks via a self-hosted
+    # Headscale (open-source Tailscale coordination server), reachable
+    # through direct router port-forwarding + a free DuckDNS hostname +
+    # Headscale's own built-in Let's Encrypt support — no third-party tunnel
+    # service. All the actual OS/arch/Docker/Headscale/Tailscale/DuckDNS
+    # logic lives in party.py — these handlers just do settings/DB plumbing
+    # around it. Loopback admin calls to Headscale's HTTP API use
+    # https://127.0.0.1:{HEADSCALE_PUBLIC_PORT} (real TLS now, via the same
+    # cert real clients see) rather than the old plain-HTTP loopback port.
+
+    def _set_party_settings(self, **kv):
+        with get_db() as db:
+            for k, v in kv.items():
+                if v is not None:
+                    db.execute('INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)', (k, json.dumps(v)))
+
+    def _headscale_sni(self):
+        # party.headscale_request_core always dials 127.0.0.1 (no router/NAT
+        # dependency for same-machine admin calls) but needs the real public
+        # hostname as the TLS server name — both to satisfy headscale's
+        # Let's Encrypt/autocert SNI-based cert selection and to validate
+        # the returned certificate against the name it's actually issued for.
+        return self._settings_value('headscaleUrl')
+
+    def _get_party_status(self):
+        mode = self._settings_value('partyHostMode')
+        self._json({
+            'partyRole':          self._settings_value('partyRole'),
+            'partyHostMode':      mode,
+            'headscaleUrl':       self._settings_value('headscaleUrl'),
+            'duckdnsDomain':      self._settings_value('duckdnsDomain'),
+            'headscalePublicPort': party.HEADSCALE_PUBLIC_PORT,
+            'os':                 party.detect_os(),
+            'arch':               party.detect_arch(),
+            'dockerAvailable':    party.docker_available(),
+            'dockerDesktopInstalled': party.docker_desktop_installed(),
+            'virtualizationEnabled': party.windows_virtualization_enabled(),
+            'headscaleResponds':  party.headscale_responds(),
+            'binariesInstalled':  party.HEADSCALE_BIN.exists() if mode == 'native' else (mode == 'docker'),
+        })
+
+    def _post_party_install(self):
+        os_name = party.detect_os()
+        arch = party.detect_arch()
+        mode = party.pick_host_mode(os_name)
+        restart_required = False
+        if mode == 'docker':
+            r = party.install_docker_desktop_if_missing()
+            if r.get('error'):
+                return self._json(r)
+            restart_required = bool(r.get('restartRequired'))
+            if not restart_required:
+                r = party.install_headscale_docker()
+                if r.get('error'):
+                    return self._json(r)
+        else:
+            if not arch:
+                return self._json({'error': f'Unrecognized CPU architecture: {platform.machine()}'})
+            r = party.install_headscale_native(os_name, arch)
+            if r.get('error'):
+                return self._json(r)
+        self._set_party_settings(partyHostMode=mode)
+        self._json({'ok': True, 'mode': mode, 'restartRequired': restart_required})
+
+    def _post_party_finalize(self, body):
+        duckdns_domain = (body.get('duckdnsDomain') or '').strip().lower()
+        duckdns_token  = (body.get('duckdnsToken') or '').strip()
+        acme_email     = (body.get('acmeEmail') or '').strip()
+        if not duckdns_domain or not duckdns_token or not acme_email:
+            return self._json({'error': 'duckdnsDomain, duckdnsToken, and acmeEmail are all required.'})
+        if '.' not in duckdns_domain:
+            duckdns_domain = f'{duckdns_domain}.duckdns.org'
+
+        mode = self._settings_value('partyHostMode') or party.pick_host_mode(party.detect_os())
+
+        # A record: points the public hostname at this machine, for real
+        # Tailscale/Headscale client traffic on port 443 (the router's
+        # port-forward is what actually delivers it here).
+        r = party.update_duckdns(duckdns_domain, duckdns_token)
+        if r.get('error'):
+            return self._json({'error': f'DuckDNS update failed: {r["error"]}'})
+
+        # Certificate via ACME DNS-01 (see party.py's module docstring for
+        # why not headscale's own built-in ACME — this ISP blocks the ports
+        # HTTP-01/TLS-ALPN-01 both need). No port-80 dependency at all: the
+        # TXT record this publishes is enough for Let's Encrypt to validate.
+        r = party.issue_certificate_dns01(duckdns_domain, acme_email, duckdns_token)
+        if r.get('error'):
+            return self._json({'error': f'Certificate issuance failed: {r["error"]}'})
+
+        party.write_headscale_config(duckdns_domain, mode)
+        party.write_party_host_flag(mode)
+
+        if mode == 'docker':
+            r = party.start_headscale_docker()
+            if r.get('error'):
+                return self._json(r)
+        else:
+            # Native headscale is only ever spawned by launcher.py's
+            # supervisor (same pattern as ollama/code_server) — never
+            # Popen'd directly here, or we'd end up with two competing
+            # processes bound to the same port.
+            (DATA_DIR / '.restart').touch()
+
+        for _ in range(20):
+            if party.headscale_responds():
+                break
+            time.sleep(1)
+        else:
+            return self._json({'error': 'Headscale did not come up in time — check data/launcher.log.'})
+
+        r = party.ensure_default_user(mode)
+        if r.get('error'):
+            return self._json(r)
+        api_key, err = party.create_api_key(mode)
+        if err:
+            return self._json({'error': err})
+        self._set_party_settings(
+            partyRole='host', headscaleApiKey=api_key, headscaleUrl=duckdns_domain,
+            duckdnsDomain=duckdns_domain, duckdnsToken=duckdns_token, acmeEmail=acme_email,
+            certIssuedAt=datetime.datetime.now().isoformat())
+
+        # The host also needs to be a mesh member itself, not just run the
+        # coordinator, so it gets a routable mesh IP other party members can
+        # actually pool compute from. The preauth-key mint is a short
+        # request/response admin call over loopback — party.py's
+        # headscale_request_core dials 127.0.0.1 directly but sends the real
+        # domain as the TLS SNI, so certificate hostname verification passes
+        # against the cert we issued for that real domain (it would
+        # otherwise fail — the cert is for the DuckDNS domain, never for
+        # "127.0.0.1"). The actual client join, though, is a real Tailscale
+        # connection that must present the
+        # public hostname to pass TLS verification on the *client* side —
+        # tailscale itself has no supported way to override SNI/skip that
+        # check the way our own admin calls do. Reaching this machine's own
+        # port via that public hostname depends on the router supporting
+        # NAT hairpin/loopback (routing a LAN client's request to the
+        # router's own external IP back to the internal host) — not
+        # universal across consumer routers. If self-join times out, that's
+        # the likely reason; the documented fallback is a one-line
+        # /etc/hosts (or Windows hosts file) entry pointing {domain} at
+        # 127.0.0.1 on this machine only.
+        self_key, err2 = party.create_preauth_key(self._headscale_sni(), api_key, reusable=True, expiration_minutes=10)
+        self_join_error = None
+        if not err2:
+            party.install_tailscale_client(party.detect_os(), party.detect_arch())
+            join_result = party.tailscale_up(f'https://{duckdns_domain}', self_key)
+            self_join_error = join_result.get('error')
+
+        self._json({'ok': True, 'headscaleUrl': duckdns_domain, 'selfJoinError': self_join_error})
+
+    def _get_party_members_internal(self):
+        # Only ever called on the machine that IS the host, so the loopback
+        # admin URL is always the right address — never the public hostname.
+        api_key = self._settings_value('headscaleApiKey')
+        nodes, err = party.list_nodes(self._headscale_sni(), api_key)
+        if err:
+            return self._json({'error': err})
+        self._json({'nodes': nodes})
+
+    def _post_party_invite(self, body):
+        headscale_url = self._settings_value('headscaleUrl')
+        api_key = self._settings_value('headscaleApiKey')
+        if not headscale_url or not api_key:
+            return self._json({'error': 'This device is not a party host yet.'})
+        key, err = party.create_preauth_key(self._headscale_sni(), api_key, reusable=False, expiration_minutes=60)
+        if err:
+            return self._json({'error': err})
+        status, _ = party.tailscale_status_json()
+        own_ip = ((status or {}).get('Self') or {}).get('TailscaleIPs', [''])[0]
+        # headscaleUrl is stored as a bare domain (e.g. "myparty.duckdns.org")
+        # — add the scheme back on for anything that actually dials it.
+        login_server = headscale_url if headscale_url.startswith('http') else f'https://{headscale_url}'
+        invite_payload = {
+            'headscaleUrl': headscale_url,
+            'preauthKey': key,
+            'hostAtlantisUrl': f'http://{own_ip}:{PORT}' if own_ip else '',
+        }
+        blob = base64.b64encode(json.dumps(invite_payload).encode()).decode()
+        self._json({
+            'inviteBlob': blob,
+            'cliCommand': f'tailscale up --login-server={login_server} --authkey={key}',
+            'friendName': (body.get('friendName') or '').strip(),  # Headscale itself doesn't label keys — this is purely for the UI's own display
+        })
+
+    def _upsert_party_host_row(self, db, name, ip):
+        existing = db.execute('SELECT id FROM network_hosts WHERE via_party=?', (name,)).fetchone()
+        if existing:
+            return False
+        max_row = db.execute('SELECT MAX(priority) m FROM network_hosts').fetchone()
+        priority = (max_row['m'] or 0) + 1
+        now = datetime.datetime.now().isoformat()
+        db.execute(
+            'INSERT INTO network_hosts (id,name,ip,mac,ollama_port,priority,enabled,created_at,ssh_user,capacity,via_party) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+            (uuid.uuid4().hex[:20], name, ip, None, 11434, priority, 1, now, 'viktor', 'full', name)
+        )
+        return True
+
+    def _post_party_join(self, body):
+        blob = (body.get('inviteBlob') or '').strip()
+        if not blob:
+            return self._json({'error': 'inviteBlob is required'})
+        try:
+            invite = json.loads(base64.b64decode(blob).decode())
+        except Exception as e:
+            return self._json({'error': f'Could not decode invite: {e}'})
+        headscale_url = invite.get('headscaleUrl')
+        preauth_key = invite.get('preauthKey')
+        if not headscale_url or not preauth_key:
+            return self._json({'error': 'Invite is missing headscaleUrl or preauthKey'})
+
+        os_name, arch = party.detect_os(), party.detect_arch()
+        r = party.install_tailscale_client(os_name, arch)
+        if r.get('error'):
+            return self._json(r)
+        login_server = headscale_url if headscale_url.startswith('http') else f'https://{headscale_url}'
+        r = party.tailscale_up(login_server, preauth_key)
+        if r.get('error'):
+            return self._json(r)
+
+        status, err = party.tailscale_status_json()
+        if err:
+            return self._json({'error': err})
+        self._set_party_settings(headscaleUrl=headscale_url, partyHostAtlantisUrl=invite.get('hostAtlantisUrl', ''))
+
+        # Auto-add the host (and any peers already visible) as network_hosts
+        # rows straight from `tailscale status` — this is what avoids ever
+        # typing an IP manually on the joining side.
+        added = 0
+        with get_db() as db:
+            for peer in (status or {}).get('Peer', {}).values():
+                name = peer.get('HostName') or (peer.get('DNSName') or '').split('.')[0]
+                ips = peer.get('TailscaleIPs') or []
+                if name and ips and self._upsert_party_host_row(db, name, ips[0]):
+                    added += 1
+            regenerate_ollama_endpoint_setting(db)
+        self._json({'ok': True, 'hostsAdded': added})
+
+    def _post_party_sync_roster(self):
+        role = self._settings_value('partyRole')
+        if role == 'host':
+            api_key = self._settings_value('headscaleApiKey')
+            nodes, err = party.list_nodes(self._headscale_sni(), api_key)
+            if err:
+                return self._json({'error': err})
+        else:
+            host_url = self._settings_value('partyHostAtlantisUrl')
+            if not host_url:
+                return self._json({'error': 'No party host URL known — join a party first.'})
+            try:
+                with urllib.request.urlopen(f'{host_url}/api/party/members-internal', timeout=10) as resp:
+                    data = json.loads(resp.read())
+                if data.get('error'):
+                    return self._json(data)
+                nodes = data.get('nodes', [])
+            except Exception as e:
+                return self._json({'error': str(e)})
+
+        own_hostname = socket.gethostname().lower()
+        added = 0
+        with get_db() as db:
+            for n in nodes:
+                name = n.get('name') or ''
+                ips = n.get('ipAddresses') or []
+                if not name or not ips or own_hostname in name.lower():
+                    continue
+                if self._upsert_party_host_row(db, name, ips[0]):
+                    added += 1
+            regenerate_ollama_endpoint_setting(db)
+        self._json({'ok': True, 'hostsAdded': added})
+
+    def _post_party_migrate(self, body):
+        target_id = (body.get('targetHostId') or '').strip()
+        if not target_id:
+            return self._json({'error': 'targetHostId is required'})
+        with get_db() as db:
+            row = db.execute('SELECT ip, ssh_user FROM network_hosts WHERE id=?', (target_id,)).fetchone()
+        if not row:
+            return self._json({'error': 'Unknown host'})
+
+        ok, err = check_ssh_access(row['ip'], row['ssh_user'])
+        if not ok:
+            return self._json({'error': f'SSH check failed: {err}'})
+
+        remote_path = party.probe_remote_atlantis_path(row['ip'], row['ssh_user']) or (body.get('remotePath') or '').strip()
+        if not remote_path:
+            return self._json({'error': 'Could not locate the remote Atlantis install automatically — pass remotePath explicitly.'})
+
+        # headscaleUrl (the DuckDNS domain) DOES carry over unchanged now —
+        # see export_party_state_archive's / _migrate_receive's docstrings.
+        meta = {
+            'headscaleApiKey': self._settings_value('headscaleApiKey'),
+            'headscaleUrl':    self._settings_value('headscaleUrl'),
+            'duckdnsDomain':   self._settings_value('duckdnsDomain'),
+            'duckdnsToken':    self._settings_value('duckdnsToken'),
+            'acmeEmail':       self._settings_value('acmeEmail'),
+        }
+        archive = party.export_party_state_archive(meta)
+        r = party.push_state_over_ssh(row['ip'], row['ssh_user'], archive)
+        if r.get('error'):
+            return self._json(r)
+
+        result = subprocess.run(
+            ['ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=5',
+             f'{row["ssh_user"]}@{row["ip"]}',
+             f'python3 {remote_path}/server/party.py migrate-receive --archive {r["remotePath"]}'],
+            capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            return self._json({'error': f'Remote setup failed: {result.stderr.strip()}'})
+        try:
+            remote_result = json.loads(result.stdout.strip().splitlines()[-1])
+        except Exception:
+            return self._json({'error': f'Remote setup finished but its result could not be parsed: {result.stdout.strip()[:300]}'})
+        new_url = remote_result.get('headscaleUrl')
+        if not remote_result.get('ok') or not new_url:
+            return self._json({'error': f'New host did not come up cleanly: {remote_result.get("error") or "unknown error"}'})
+
+        # Bring-up-before-teardown — minimizes the no-coordinator window for
+        # new joins. Already-connected peers see no interruption either way,
+        # since Headscale isn't in the WireGuard data path. Unlike the
+        # abandoned Quick Tunnel design, headscaleUrl is unchanged (same
+        # DuckDNS domain), so existing invites/links keep working — the one
+        # thing that does NOT move automatically is the router's port-
+        # forward rule, which still points at the OLD device's LAN IP if
+        # the new host is physically different hardware (see
+        # remote_result['note'] below for the new device's LAN IP to point
+        # it at instead).
+        party.PARTY_STOP_FLAG.touch()
+        with get_db() as db:
+            db.execute("DELETE FROM settings WHERE key IN "
+                       "('partyRole','headscaleApiKey','headscaleUrl','partyHostMode',"
+                       "'duckdnsDomain','duckdnsToken','acmeEmail')")
+        self._json({
+            'ok': True,
+            'headscaleUrl': new_url,
+            'newHostLanIp': remote_result.get('localLanIp'),
+            'note': remote_result.get('note', ''),
+        })
 
     # ── Threads ─────────────────────────────────────────────────────────────
 

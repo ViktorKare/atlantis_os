@@ -24,6 +24,13 @@ CODE_SERVER_BIN = CODE_SERVER_DIR / 'bin' / 'code-server'
 CERT_FILE       = DATA_DIR / 'certs' / 'cert.pem'
 KEY_FILE        = DATA_DIR / 'certs' / 'key.pem'
 
+PARTY_DIR              = DATA_DIR / 'party'
+HEADSCALE_BIN           = PARTY_DIR / 'headscale' / 'bin' / 'headscale'
+HEADSCALE_CONFIG        = PARTY_DIR / 'headscale' / 'config.yaml'
+HEADSCALE_PUBLIC_PORT   = 8443   # keep in sync with server/party.py's HEADSCALE_PUBLIC_PORT
+PARTY_HOST_FLAG         = DATA_DIR / '.party_host'   # contents ('native'|'docker'), not just existence — see party.py's write_party_host_flag()
+PARTY_STOP_FLAG         = DATA_DIR / '.party_stop'   # scoped teardown: only headscale, not the whole app
+
 _children = {}
 
 
@@ -74,6 +81,17 @@ def spawn_detached(args):
     return subprocess.Popen(args, **kwargs)
 
 
+def party_host_mode():
+    """Launcher has no DB access by design — the party-host flag file's
+    *contents* ('native'|'docker'), not just its existence, tells us which
+    supervision path to take. Written by server/party.py's
+    write_party_host_flag()."""
+    if not PARTY_HOST_FLAG.exists():
+        return None
+    mode = PARTY_HOST_FLAG.read_text().strip()
+    return mode if mode in ('native', 'docker') else None
+
+
 def code_server_cmd():
     bin_path = str(CODE_SERVER_BIN) if CODE_SERVER_BIN.exists() else shutil.which('code-server')
     if not bin_path:
@@ -103,6 +121,18 @@ def start_children():
         cmd = code_server_cmd()
         if cmd and not port_open('127.0.0.1', 5001):
             _children['code_server'] = subprocess.Popen(cmd, stdout=log, stderr=log)
+    mode = party_host_mode()
+    if mode == 'native' and HEADSCALE_BIN.exists() and not port_open('127.0.0.1', HEADSCALE_PUBLIC_PORT):
+        _children['headscale'] = subprocess.Popen(
+            [str(HEADSCALE_BIN), '--config', str(HEADSCALE_CONFIG), 'serve'],
+            stdout=log, stderr=log)
+    if mode == 'docker':
+        # Docker Desktop's own --restart unless-stopped policy is the primary
+        # supervisor here; this is just a fail-safe nudge on our own
+        # startup/restart, not tracked in _children (nothing here to Popen —
+        # the container was created once by the "Become Host" wizard via
+        # party.py).
+        subprocess.run(['docker', 'start', 'atlantis-headscale'], capture_output=True)
 
 
 def stop_children():
@@ -143,6 +173,10 @@ def restart_dead_children():
                 cmd = code_server_cmd()
                 if cmd:
                     _children[name] = subprocess.Popen(cmd, stdout=log, stderr=log)
+            elif name == 'headscale':
+                _children[name] = subprocess.Popen(
+                    [str(HEADSCALE_BIN), '--config', str(HEADSCALE_CONFIG), 'serve'],
+                    stdout=log, stderr=log)
 
 
 def run_supervisor():
@@ -180,6 +214,21 @@ def run_supervisor():
                 RESTART_FLAG.unlink()
                 stop_children()
                 start_children()
+                continue
+            if PARTY_STOP_FLAG.exists():
+                # Scoped teardown for migration: only headscale, never
+                # server/worker — driven by a live server.py API call, not
+                # the whole-app stop path above.
+                PARTY_STOP_FLAG.unlink()
+                proc = _children.pop('headscale', None)
+                if proc and proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                if party_host_mode() == 'docker':
+                    subprocess.run(['docker', 'stop', 'atlantis-headscale'], capture_output=True)
                 continue
             restart_dead_children()
     except KeyboardInterrupt:
