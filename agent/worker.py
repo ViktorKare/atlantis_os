@@ -13,6 +13,7 @@ RUNNING  = True
 
 sys.path.insert(0, str(BASE_DIR.parent))
 from logging_setup import setup_logging, install_crash_handler
+from edit_merge import merge_lazy_edit, MergeError, MergeRefusal
 logger = setup_logging('worker')
 install_crash_handler('worker', logger)
 
@@ -347,54 +348,84 @@ def _edit_error_content_limit():
             pass
     return 8000
 
-_WS_RUN_RE = re.compile(r'\s+')
+APPLY_SYSTEM_PROMPT = (
+    'You are a code-merge engine. Apply the EDIT to the FILE CONTENT. The EDIT shows the new '
+    'version of one or more regions of the file; lines containing "..." (e.g. "// ... existing '
+    'code ...") mark unchanged spans that must be kept exactly as they are in the file. Output '
+    'the COMPLETE merged file content and nothing else — no explanations, no markdown code fences.'
+)
 
-def _whitespace_agnostic_pattern(s):
-    """Build a regex matching `s` with every run of whitespace (spaces, tabs, newlines)
-    treated as interchangeable with any other run of whitespace — handles indentation
-    drift, reflowed line breaks (e.g. a multi-line block flattened to one line), and
-    incidental blank-line differences, all in a single pass, without requiring the same
-    number of lines on both sides."""
-    parts = []
-    last = 0
-    for m in _WS_RUN_RE.finditer(s):
-        parts.append(re.escape(s[last:m.start()]))
-        parts.append(r'\s+')
-        last = m.end()
-    parts.append(re.escape(s[last:]))
-    return ''.join(parts)
+# Mirrors LAZY_PLACEHOLDER_RE / applyOutputProblem in web/code/edit-merge.js.
+_LAZY_PLACEHOLDER_RE = re.compile(
+    r"(rest of (the )?(file|content|code|document)|remains?\s+(the\s+same|unchanged|below|above)"
+    r"|existing code (goes|stays|remains)|unchanged\s+(above|below)"
+    r"|content\s+(goes|will go|continues)\s+here|\.\.\.\s*(existing|rest|unchanged)|\[unchanged\])", re.I)
 
-def _edit_file_content(text, old, new, replace_all):
-    """Apply an old_string -> new_string replacement, falling back to a whitespace-agnostic
-    match (leading, trailing, and internal whitespace/line breaks are all treated as
-    interchangeable) when the exact string isn't found — the most common accidental
-    mismatch, especially with models that reformat or reflow text instead of copying it
-    verbatim. Returns (new_text, note); note is set when the fallback was used. Raises
-    ValueError with an actionable message (match count, line numbers) when it can't
-    resolve to a single unambiguous location.
-    """
-    count = text.count(old)
-    if count == 1 or (count > 1 and replace_all):
-        return (text.replace(old, new) if replace_all else text.replace(old, new, 1)), None
+def _apply_output_problem(old, new):
+    if not new.strip():
+        return 'empty output'
+    if _LAZY_PLACEHOLDER_RE.search(new):
+        return 'output contains an elision placeholder instead of real content'
+    if old and len(old) > 200 and len(new) < len(old) * 0.4:
+        return 'output is much shorter than the file (likely truncated)'
+    return None
 
-    if count == 0:
-        matches = list(re.finditer(_whitespace_agnostic_pattern(old), text))
-        if len(matches) == 1:
-            m = matches[0]
-            return text[:m.start()] + new + text[m.end():], 'matched after ignoring whitespace differences (spacing/indentation/line breaks)'
-        if len(matches) > 1:
-            raise ValueError(f'old_string matches {len(matches)} places when ignoring whitespace differences '
-                              '— add more surrounding context to make it unique, or set replace_all=true')
-        raise ValueError('old_string not found in file, even after ignoring whitespace differences.')
+def _strip_fence(text):
+    t = text.strip()
+    if t.startswith('```') and t.endswith('```'):
+        first_nl = t.find('\n')
+        if first_nl != -1:
+            return t[first_nl + 1:-3].rstrip('\n')
+    return text
 
-    file_lines = text.split('\n')
-    line_nums = [i + 1 for i, l in enumerate(file_lines) if old in l] if '\n' not in old else []
-    if line_nums:
-        shown = ', '.join(str(n) for n in line_nums[:8])
-        more = f' (+{len(line_nums) - 8} more)' if len(line_nums) > 8 else ''
-        raise ValueError(f'old_string occurs {count} times, at lines {shown}{more} '
-                          '— add surrounding context to make it unique, or set replace_all=true')
-    raise ValueError(f'old_string occurs {count} times — add surrounding context to make it unique, or set replace_all=true')
+def _load_cfg():
+    """Settings table → dict, same decoding execute_job uses."""
+    with db_session() as db:
+        rows = db.execute('SELECT key,value FROM settings').fetchall()
+    cfg = {}
+    for r in rows:
+        try:
+            cfg[r['key']] = json.loads(r['value'])
+        except Exception:
+            pass
+    return cfg
+
+def _apply_model_merge(text, edit, instructions):
+    """LLM fallback when the deterministic merge refuses: a small model applies the
+    edit and returns the whole merged file. Returns (merged, None) or (None, reason).
+    applyModel setting: a router tier name or an explicit model id (ids starting with
+    'claude' go to Anthropic, everything else to Ollama). Default tier: fast."""
+    cfg = _load_cfg()
+    router = load_router(cfg)
+    val = str(cfg.get('applyModel') or 'fast').strip()
+    tiers = router.get('tiers', {})
+    if val in tiers:
+        provider = tiers[val].get('provider', 'ollama')
+        model = tiers[val].get('model', '')
+    else:
+        provider = 'anthropic' if val.startswith('claude') else 'ollama'
+        model = val
+    user = f'FILE CONTENT:\n```\n{text}\n```\n\nEDIT:\n```\n{edit}\n```'
+    if instructions:
+        user += f'\n\nINTENT: {instructions}'
+    messages = [{'role': 'system', 'content': APPLY_SYSTEM_PROMPT},
+                {'role': 'user', 'content': user}]
+    if provider == 'anthropic':
+        key = cfg.get('anthropic_api_key', '')
+        if not key:
+            return None, 'skipped (apply model tier needs an Anthropic API key)'
+        out, err = anthropic_once(key, model or 'claude-haiku-4-5-20251001', messages, max_tokens=16384)
+    else:
+        if not model:
+            return None, 'skipped (no apply model configured — set "Apply model" in Settings)'
+        out, err = ollama_once(resolve_ollama_endpoint(cfg), model, messages)
+    if err:
+        return None, f'failed ({err})'
+    merged = _strip_fence(out or '')
+    problem = _apply_output_problem(text, merged)
+    if problem:
+        return None, f'failed ({problem})'
+    return merged, None
 
 def exec_tool(name, args, allowed=None, work_root=None):
     if allowed is not None and name not in allowed:
@@ -415,21 +446,28 @@ def exec_tool(name, args, allowed=None, work_root=None):
             p = pipe_path_safe(args.get('path', ''), work_root)
             if _db_write_guard(p):
                 return {'error': 'Editing the system database file is not allowed'}
-            old, new = args.get('old_string', ''), args.get('new_string', '')
-            if not old:
-                return {'error': 'old_string is required'}
+            edit = args.get('edit', '')
+            if not edit:
+                return {'error': 'edit is required — write the new content of the region you are '
+                                 'changing, with "// ... existing code ..." marker lines around unchanged spans'}
             text = p.read_text()
+            note = None
             try:
-                new_text, note = _edit_file_content(text, old, new, bool(args.get('replace_all')))
-            except ValueError as e:
-                result = {'error': str(e)}
-                # Ground the model's next retry in the real content instead of leaving it to
-                # guess again from stale/misremembered context.
-                if len(text) <= _edit_error_content_limit():
-                    result['current_content'] = text
-                else:
-                    result['hint'] = 'File is large — call read_file to see the current content before retrying.'
-                return result
+                new_text = merge_lazy_edit(text, edit)
+            except MergeError as e:
+                return {'error': str(e)}
+            except MergeRefusal as e:
+                new_text, apply_err = _apply_model_merge(text, edit, args.get('instructions', ''))
+                if new_text is None:
+                    result = {'error': f'could not locate the edited region ({e}); fallback merge {apply_err}'}
+                    # Ground the model's next retry in the real content instead of leaving it to
+                    # guess again from stale/misremembered context.
+                    if len(text) <= _edit_error_content_limit():
+                        result['current_content'] = text
+                    else:
+                        result['hint'] = 'File is large — call read_file to see the current content before retrying.'
+                    return result
+                note = 'anchors did not match; merged via apply model'
             p.write_text(new_text)
             result = {'ok': True, 'path': str(p)}
             if note:
@@ -875,10 +913,17 @@ PIPELINE_TOOLS = [
           ['path'], {'path': {'type': 'string'}}),
     _tool('write_file', 'Write content to a file, creating it if needed. Overwrites the whole file — prefer edit_file for small changes.',
           ['path', 'content'], {'path': {'type': 'string'}, 'content': {'type': 'string'}}),
-    _tool('edit_file', 'Replace an exact string in a file. old_string must match the file exactly and occur once (or set replace_all).',
-          ['path', 'old_string', 'new_string'],
-          {'path': {'type': 'string'}, 'old_string': {'type': 'string'},
-           'new_string': {'type': 'string'}, 'replace_all': {'type': 'boolean'}}),
+    _tool('edit_file',
+          'Edit a file by writing the NEW version of just the region you are changing. Use a '
+          'comment line containing "..." (e.g. "// ... existing code ...") for unchanged spans — '
+          'everything you skip is kept as-is. START and END each region with 1-3 unchanged lines '
+          'copied from the file; these anchor lines locate the region (close-enough copies are '
+          'fine). For a pure insertion, include the existing line above AND below the insertion '
+          'point. Separate multiple changed regions with a "..." marker line. Write only what the '
+          'region should look like after the edit.',
+          ['path', 'edit'],
+          {'path': {'type': 'string'}, 'edit': {'type': 'string'},
+           'instructions': {'type': 'string', 'description': 'One short sentence describing the intent of the change'}}),
     _tool('list_files', 'List files and directories at a path.',
           ['path'], {'path': {'type': 'string'}}),
     _tool('search_files', 'Search file contents recursively under a directory. Pattern is a regex (falls back to literal text). Returns file, line number, and matching line.',
@@ -1187,8 +1232,9 @@ def anthropic_agentic(api_key, model, messages, use_tools, step_idx, job_id, wor
 
     return '\n\n'.join(filter(None, all_output)), None
 
-def anthropic_once(api_key, model, messages):
-    """Non-streaming Anthropic call for PM review. Returns (output, error)."""
+def anthropic_once(api_key, model, messages, max_tokens=1024):
+    """Non-streaming Anthropic call for PM review (and apply-model merges, which pass a
+    larger max_tokens since they emit whole files). Returns (output, error)."""
     if not api_key:
         return None, 'anthropic_api_key not set'
     system_text = None
@@ -1198,7 +1244,7 @@ def anthropic_once(api_key, model, messages):
             system_text = m.get('content', '')
         elif m.get('role') in ('user', 'assistant'):
             ant_msgs.append({'role': m['role'], 'content': m.get('content', '') or ''})
-    body = {'model': model, 'max_tokens': 1024, 'messages': ant_msgs, 'stream': False}
+    body = {'model': model, 'max_tokens': max_tokens, 'messages': ant_msgs, 'stream': False}
     if system_text:
         body['system'] = system_text
     req = urllib.request.Request(
