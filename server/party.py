@@ -920,7 +920,22 @@ def install_tailscale_client(os_name, arch):
                 req = urllib.request.Request('https://tailscale.com/install.sh', headers={'User-Agent': 'atlantis-installer'})
                 with urllib.request.urlopen(req, timeout=60) as resp:
                     script_path.write_bytes(resp.read())
-                subprocess.run(['sh', str(script_path)], check=True, timeout=300)
+                # Tailscale's install.sh calls sudo internally to install
+                # packages — capture output so a failure (most commonly: no
+                # tty for an interactive sudo password prompt, or an
+                # unsupported/undetected distro) surfaces its real reason
+                # instead of just a bare exit code.
+                result = subprocess.run(['sh', str(script_path)], capture_output=True, text=True, timeout=300)
+                if result.returncode != 0:
+                    detail = (result.stderr or result.stdout or '').strip()[-800:]
+                    hint = ''
+                    if 'tty' in detail.lower() or 'askpass' in detail.lower() or 'sudo' in detail.lower():
+                        hint = (' This looks like a sudo/password prompt issue — the install script needs '
+                                'root privileges and this automated flow has no way to supply an interactive '
+                                'password. Install Tailscale manually first in a terminal: '
+                                '`curl -fsSL https://tailscale.com/install.sh | sh`, then click Join again '
+                                '(it will skip straight to joining since Tailscale will already be installed).')
+                    return {'error': f'Tailscale install failed (exit {result.returncode}): {detail}{hint}'}
         except Exception as e:
             return {'error': f'Tailscale install failed: {e}'}
         return {'ok': True}
