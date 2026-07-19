@@ -335,32 +335,59 @@ def browser_snapshot():
             'elements': els,
             'hint': 'Use the ref numbers with browser_click / browser_type.'}
 
+def _edit_error_content_limit():
+    """Settings-tab-configurable size cap (chars) for echoing a file's current content
+    back in an edit_file error — see 'Edit-failure feedback limit' under Code editor."""
+    with db_session() as db:
+        row = db.execute("SELECT value FROM settings WHERE key='editErrorContentLimit'").fetchone()
+    if row and row['value'] is not None:
+        try:
+            return int(json.loads(row['value']))
+        except (ValueError, TypeError):
+            pass
+    return 8000
+
+_WS_RUN_RE = re.compile(r'\s+')
+
+def _whitespace_agnostic_pattern(s):
+    """Build a regex matching `s` with every run of whitespace (spaces, tabs, newlines)
+    treated as interchangeable with any other run of whitespace — handles indentation
+    drift, reflowed line breaks (e.g. a multi-line block flattened to one line), and
+    incidental blank-line differences, all in a single pass, without requiring the same
+    number of lines on both sides."""
+    parts = []
+    last = 0
+    for m in _WS_RUN_RE.finditer(s):
+        parts.append(re.escape(s[last:m.start()]))
+        parts.append(r'\s+')
+        last = m.end()
+    parts.append(re.escape(s[last:]))
+    return ''.join(parts)
+
 def _edit_file_content(text, old, new, replace_all):
-    """Apply an old_string -> new_string replacement, falling back to a
-    trailing-whitespace-insensitive line match when the exact string isn't
-    found (the most common accidental mismatch). Returns (new_text, note);
-    note is set when the fallback was used. Raises ValueError with an
-    actionable message (match count, line numbers) when it can't resolve
-    to a single unambiguous location.
+    """Apply an old_string -> new_string replacement, falling back to a whitespace-agnostic
+    match (leading, trailing, and internal whitespace/line breaks are all treated as
+    interchangeable) when the exact string isn't found — the most common accidental
+    mismatch, especially with models that reformat or reflow text instead of copying it
+    verbatim. Returns (new_text, note); note is set when the fallback was used. Raises
+    ValueError with an actionable message (match count, line numbers) when it can't
+    resolve to a single unambiguous location.
     """
     count = text.count(old)
     if count == 1 or (count > 1 and replace_all):
         return (text.replace(old, new) if replace_all else text.replace(old, new, 1)), None
 
-    file_lines = text.split('\n')
     if count == 0:
-        old_lines = old.split('\n')
-        matches = [i for i in range(len(file_lines) - len(old_lines) + 1)
-                   if all(file_lines[i + j].rstrip() == old_lines[j].rstrip() for j in range(len(old_lines)))]
+        matches = list(re.finditer(_whitespace_agnostic_pattern(old), text))
         if len(matches) == 1:
-            i = matches[0]
-            new_lines = file_lines[:i] + new.split('\n') + file_lines[i + len(old_lines):]
-            return '\n'.join(new_lines), 'matched after ignoring trailing-whitespace differences'
+            m = matches[0]
+            return text[:m.start()] + new + text[m.end():], 'matched after ignoring whitespace differences (spacing/indentation/line breaks)'
         if len(matches) > 1:
-            raise ValueError(f'old_string matches {len(matches)} places when ignoring trailing whitespace '
+            raise ValueError(f'old_string matches {len(matches)} places when ignoring whitespace differences '
                               '— add more surrounding context to make it unique, or set replace_all=true')
-        raise ValueError('old_string not found in file, even after ignoring trailing whitespace differences.')
+        raise ValueError('old_string not found in file, even after ignoring whitespace differences.')
 
+    file_lines = text.split('\n')
     line_nums = [i + 1 for i, l in enumerate(file_lines) if old in l] if '\n' not in old else []
     if line_nums:
         shown = ', '.join(str(n) for n in line_nums[:8])
@@ -395,7 +422,14 @@ def exec_tool(name, args, allowed=None, work_root=None):
             try:
                 new_text, note = _edit_file_content(text, old, new, bool(args.get('replace_all')))
             except ValueError as e:
-                return {'error': str(e)}
+                result = {'error': str(e)}
+                # Ground the model's next retry in the real content instead of leaving it to
+                # guess again from stale/misremembered context.
+                if len(text) <= _edit_error_content_limit():
+                    result['current_content'] = text
+                else:
+                    result['hint'] = 'File is large — call read_file to see the current content before retrying.'
+                return result
             p.write_text(new_text)
             result = {'ok': True, 'path': str(p)}
             if note:

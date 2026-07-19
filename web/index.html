@@ -631,6 +631,10 @@
               <label for="setting-code-ghost-tier">Ghost-text model <span class="label-hint">(inline completions while typing)</span></label>
               <select id="setting-code-ghost-tier"></select>
             </div>
+            <div class="settings-field">
+              <label for="setting-edit-error-content-limit">Edit-failure feedback limit <span class="label-hint">(chars; current file content is shown back to the model when an edit's old_string fails to match, up to this size)</span></label>
+              <input type="number" id="setting-edit-error-content-limit" min="0" max="100000" step="500">
+            </div>
           </div>
 
           <div class="settings-group">
