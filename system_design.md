@@ -399,8 +399,26 @@ POST /api/system/stop       no body → {ok: true}
     that seeds system prompt/tools/model for that pane's conversation, and a
     real tool-calling loop (`read_file`/`list_dir`/`search_files`/
     `run_command`, gated by the agent's file/shell toggles, plus `ask_user`
-    always available and `propose_edit`/`propose_new_file` when file access
-    is on). `propose_edit`/`propose_new_file` route through the same
+    always available and `propose_edit`/`propose_new_file`/`propose_rewrite`
+    when file access is on). `propose_edit` takes `{path, edit, instructions?}`
+    — a lazy region rewrite: the model writes the NEW version of just the
+    region it is changing, eliding unchanged spans with `// ... existing
+    code ...` marker lines, and starting/ending each region with 1-3
+    unchanged anchor lines copied from the file. The deterministic merge
+    (`web/code/edit-merge.js`, mirrored byte-for-byte in behavior by
+    `agent/edit_merge.py` for the worker/main-chat `edit_file` tool) locates
+    each chunk by fuzzy-anchoring its first/last lines (normalized equality,
+    then char-LCS similarity ≥ 0.85 with a 0.05 ambiguity margin; 2-line
+    context windows rank duplicate candidates) and refuses rather than
+    guesses on any unresolved/ambiguous anchor. A refusal falls back to the
+    "apply model" (`applyModel` setting: router tier name or Ollama model
+    id; panel default = the pane's current chat model, worker default =
+    `fast` tier) which regenerates the whole merged file, guarded against
+    truncation/lazy placeholders; apply-model output always gets manual hunk
+    review (never auto-accept). If that also fails, the model gets a
+    grounded error echoing the file's real content (up to the
+    `editErrorContentLimit` setting). `propose_edit`/`propose_new_file`
+    route through the same
     multi-hunk diff review (`proposeDiff()` in `web/code/editor.js`) as a
     manual edit: hunks render as inline CM6 accept/reject widgets, and the
     buffer is locked read-only (both `EditorView.editable` and
@@ -909,6 +927,18 @@ POST /api/system/stop       no body → {ok: true}
   - Both HTTPS cert generation and code-server are skipped entirely on
     Windows (no bundled openssl; code-server's official Windows support is
     WSL-only) rather than partially supported
+  - Exact-string (old_string/new_string) AI editing is retired (2026-07-19):
+    small local models can't reproduce file content verbatim, no matter how
+    much error-feedback scaffolding is stacked on top. All AI edits
+    (`edit_file` in worker/main chat, `propose_edit` in the code editor) are
+    lazy region rewrites — new region content with "..." elision markers and
+    1-3 unchanged anchor lines at each region edge — resolved by the
+    mirrored merge modules `agent/edit_merge.py` / `web/code/edit-merge.js`
+    (keep the two behaviorally identical; thresholds: similarity 0.85,
+    ambiguity margin 0.05). The merge refuses rather than guesses; refusals
+    fall back to the `applyModel` (settings key, tier or model id) full-file
+    regeneration with truncation/placeholder guards, then to a grounded
+    error. Apply-model output never auto-accepts in the editor panel.
 
 ---
 
