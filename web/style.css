@@ -937,6 +937,8 @@ body::before {
 
 .editor-field input[type="text"],
 .editor-field input[type="number"],
+.editor-field input[type="password"],
+.editor-field input[type="email"],
 .editor-field select,
 .editor-field textarea {
   width: 100%;
@@ -1894,7 +1896,10 @@ body::before {
   margin-bottom: 6px;
 }
 
-.settings-field input[type="text"] {
+.settings-field input[type="text"],
+.settings-field input[type="password"],
+.settings-field input[type="number"],
+.settings-field select {
   width: 100%;
   background: var(--bg3);
   color: var(--text);
@@ -1905,7 +1910,9 @@ body::before {
   font-family: monospace;
   outline: none;
 }
-.settings-field input[type="text"]:focus { border-color: var(--accent); }
+.settings-field input[type="text"]:focus,
+.settings-field input[type="password"]:focus,
+.settings-field select:focus { border-color: var(--accent); }
 
 .input-with-unit {
   display: flex;
@@ -4203,3 +4210,22 @@ button:not(:disabled):active {
   overflow-y: auto;
 }
 .turn-feedback-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+
+/* ── Party ────────────────────────────────────────────────── */
+
+#section-party { flex-direction: column; overflow-y: auto; }
+
+#party-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+}
+#party-toolbar h2 { font-size: 16px; font-weight: 600; }
+
+#section-party > .editor-form {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+}
+#section-party > .editor-form:last-child { border-bottom: none; }
