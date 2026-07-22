@@ -123,8 +123,13 @@
 
           <div>
             <div id="home-compose-card">
+              <div id="home-attach-staging-strip" class="attach-staging-strip hidden"></div>
               <textarea id="home-input" placeholder="Ask anything, or start a chat… (@brain for a one-off system question)" rows="1"></textarea>
+              <input type="file" id="home-attach-file-input" multiple hidden>
               <div id="home-compose-toolbar">
+                <button id="home-attach-file-btn" class="icon-btn" title="Attach image or file">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+                </button>
                 <select id="home-agent-select"><option value="">No agent</option></select>
                 <select id="home-model-select"></select>
                 <div id="home-brain-controls" hidden>

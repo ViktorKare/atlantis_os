@@ -112,6 +112,10 @@ const homeAgentSelect  = document.getElementById('home-agent-select');
 const homeModelSelect  = document.getElementById('home-model-select');
 const homeSendBtn      = document.getElementById('home-send-btn');
 const homeRecent       = document.getElementById('home-recent');
+const homeAttachFileBtn      = document.getElementById('home-attach-file-btn');
+const homeAttachFileInput    = document.getElementById('home-attach-file-input');
+const homeAttachStagingStrip = document.getElementById('home-attach-staging-strip');
+const homeStaging = createAttachmentStaging(homeAttachStagingStrip);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function uid() {
@@ -806,6 +810,10 @@ async function sendFromHome() {
 
   switchSection('chat');
   userInput.value = text;
+  if (!homeStaging.isEmpty()) {
+    chatStaging.loadTransferred(homeStaging.getItemsForTransfer());
+    homeStaging.clear();
+  }
   send();
 
   homeInput.value = '';
@@ -842,6 +850,13 @@ homeInput.addEventListener('input', () => {
   homeInput.style.height = 'auto';
   homeInput.style.height = Math.min(homeInput.scrollHeight, 160) + 'px';
 });
+
+homeAttachFileBtn.addEventListener('click', () => homeAttachFileInput.click());
+homeAttachFileInput.addEventListener('change', async () => {
+  await homeStaging.addFiles(homeAttachFileInput.files, { model: homeModelSelect.value });
+  homeAttachFileInput.value = '';
+});
+bindPasteImages(homeInput, homeStaging, () => homeModelSelect.value);
 
 document.getElementById('home-mode-toggle').addEventListener('click', toggleHomeMode);
 
