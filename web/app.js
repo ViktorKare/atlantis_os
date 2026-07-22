@@ -184,6 +184,11 @@ function escHtml(s) {
 function switchSection(name) {
   closeMobileNav();
   closeMobileSidebarDrawers();
+  // Note: this deliberately does NOT reset the drill-down selection state
+  // (activeAgentId/activeSkillId/activeTaskId/activePlanName + detail-pane
+  // content). Unlike the drawers, drill-down is pure DOM-state-driven and
+  // matches desktop's "last selection stays shown" behavior; the always-
+  // visible "← Back" button is the escape hatch back to the list.
   const curEl = document.getElementById(`section-${activeSection}`);
   const scrollable = curEl?.querySelector('#chat-window, .editor-area, #settings-main, #home-chat-window, #dbg-log-body');
   if (scrollable) sectionScrolls[activeSection] = scrollable.scrollTop;

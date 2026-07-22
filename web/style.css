@@ -4267,7 +4267,8 @@ button:not(:disabled):active {
 #mobile-nav-toggle,
 #mobile-nav-backdrop,
 .mobile-sidebar-toggle-btn,
-.mobile-sidebar-backdrop {
+.mobile-sidebar-backdrop,
+.mobile-back-btn {
   display: none;
 }
 
@@ -4315,6 +4316,9 @@ button:not(:disabled):active {
   /* Drill-down: list↔detail sections that share the .section-sidebar +
      .editor-area (with a leading <p class="empty-state">) structure. */
   .section-sidebar { width: 100%; }
+  /* For #plans-main (.editor-area.plans-area), this has the same specificity
+     as .plans-area's `display: flex` rule above — it wins only because it
+     appears later in source order. Do not reorder without checking. */
   .editor-area { display: none; }
   .mobile-back-btn {
     display: none;
@@ -4403,9 +4407,11 @@ button:not(:disabled):active {
 
   /* Best-effort only: Pipelines canvas and the code editor's pane system
      keep their desktop CSS untouched — just make sure their containers
-     scroll instead of clipping/overflowing the viewport. #code-pane-row-scroll
-     is the code editor's real horizontal-scroll wrapper (web/index.html:413,
-     wraps #code-pane-row where panes.js mounts each pane's .code-pane-body). */
+     scroll instead of clipping/overflowing the viewport. The code editor's
+     pane row (#code-pane-row-scroll, web/index.html:413, wraps
+     #code-pane-row where panes.js mounts each pane's .code-pane-body)
+     already scrolls horizontally via its own longhand overflow-x/overflow-y
+     rules in web/code/code.css (loaded after this file), so no
+     mobile-specific override is needed here. */
   #pipe-canvas-wrap { overflow: auto; }
-  #code-pane-row-scroll { overflow: auto; }
 }
