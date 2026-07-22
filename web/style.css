@@ -4306,3 +4306,32 @@ button:not(:disabled):active {
   }
   #nav-rail.open { transform: translateX(0); }
 }
+
+@media (max-width: 720px) {
+  /* Drill-down: list↔detail sections that share the .section-sidebar +
+     .editor-area (with a leading <p class="empty-state">) structure. */
+  .section-sidebar { width: 100%; }
+  .editor-area { display: none; }
+  .mobile-back-btn {
+    display: none;
+    width: 100%;
+    padding: 10px 16px;
+    background: var(--bg2);
+    border: none;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .section:has(.editor-area > :not(.empty-state)) .editor-area {
+    display: flex;
+    flex-direction: column;
+  }
+  .section:has(.editor-area > :not(.empty-state)) .section-sidebar {
+    display: none;
+  }
+  .section:has(.editor-area > :not(.empty-state)) .mobile-back-btn {
+    display: block;
+  }
+}

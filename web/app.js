@@ -113,6 +113,33 @@ mobileNavToggle.addEventListener('click', () => {
   mobileNavBackdrop.classList.toggle('open');
 });
 mobileNavBackdrop.addEventListener('click', closeMobileNav);
+
+const MOBILE_BACK_RESET = {
+  agents: () => {
+    activeAgentId = null;
+    document.getElementById('agents-main').innerHTML = '<p class="empty-state">Select an agent or create a new one</p>';
+    renderAgentList();
+  },
+  skills: () => {
+    activeSkillId = null;
+    document.getElementById('skills-main').innerHTML = '<p class="empty-state">Select a skill or create a new one</p>';
+    renderSkillList();
+  },
+  tasks: () => {
+    activeTaskId = null;
+    document.getElementById('tasks-main').innerHTML = '<p class="empty-state">Select a task or create a new one</p>';
+    renderTaskList();
+  },
+  plans: () => {
+    activePlanName = null;
+    document.getElementById('plans-main').innerHTML = '<p class="empty-state">Select a plan or create a new one</p>';
+    renderPlanList();
+  },
+};
+document.querySelectorAll('.mobile-back-btn').forEach(btn => {
+  btn.addEventListener('click', () => MOBILE_BACK_RESET[btn.dataset.target]?.());
+});
+
 const threadSwitcherName  = document.getElementById('thread-switcher-name');
 const threadSwitcherMenu  = document.getElementById('thread-switcher-menu');
 const toolbarMoreBtn      = document.getElementById('toolbar-more-btn');
