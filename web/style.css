@@ -4313,6 +4313,17 @@ button:not(:disabled):active {
 }
 
 @media (max-width: 720px) {
+  /* #mobile-nav-toggle sits fixed at top:10/left:10, 36x36 — nudge the
+     leftmost element of each section's top bar clear of that box so the
+     hamburger doesn't sit on top of a title or button. */
+  #thread-switcher-wrap { margin-left: 42px; }
+  #hosts-toolbar h2 { margin-left: 30px; }
+  .settings-content h2 { margin-left: 38px; }
+  .mobile-sidebar-toggle-btn { margin-left: 40px; }
+  .section-sidebar > button { margin-left: 54px; }
+}
+
+@media (max-width: 720px) {
   /* Drill-down: list↔detail sections that share the .section-sidebar +
      .editor-area (with a leading <p class="empty-state">) structure. */
   .section-sidebar { width: 100%; }
