@@ -4377,3 +4377,34 @@ button:not(:disabled):active {
     transform: translateX(0);
   }
 }
+
+@media (max-width: 720px) {
+  /* Fluid message bubbles (desktop uses fixed px max-widths) */
+  .message,
+  .message.user .bubble {
+    max-width: 100%;
+  }
+  .msg-image-thumb { max-width: 45vw; max-height: 45vw; }
+
+  /* Home */
+  #home-main { padding: 4vh 14px 24px; }
+  #home-greeting { font-size: 21px; }
+  #home-compose-toolbar { flex-wrap: wrap; row-gap: 6px; }
+  #home-agent-select, #home-model-select { max-width: 140px; }
+
+  /* Chat composer */
+  #composer-wrap { padding: 10px 10px 12px; }
+  #composer-row { flex-wrap: wrap; row-gap: 6px; }
+
+  /* Settings */
+  #settings-main { padding: 20px 16px; }
+  .settings-content { max-width: 100%; }
+
+  /* Best-effort only: Pipelines canvas and the code editor's pane system
+     keep their desktop CSS untouched — just make sure their containers
+     scroll instead of clipping/overflowing the viewport. #code-pane-row-scroll
+     is the code editor's real horizontal-scroll wrapper (web/index.html:413,
+     wraps #code-pane-row where panes.js mounts each pane's .code-pane-body). */
+  #pipe-canvas-wrap { overflow: auto; }
+  #code-pane-row-scroll { overflow: auto; }
+}
