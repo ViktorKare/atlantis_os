@@ -4256,3 +4256,53 @@ button:not(:disabled):active {
   max-height: 90vh;
   border-radius: 8px;
 }
+
+/* ── Mobile phone layout ──────────────────────────────────────────────────
+   Single breakpoint — no separate tablet tier. Pipelines' node canvas and
+   the code editor's pane system are intentionally left un-redesigned here;
+   they get overflow:auto below instead. */
+
+#mobile-nav-toggle,
+#mobile-nav-backdrop {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  #mobile-nav-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    background: var(--glass-bg2);
+    backdrop-filter: blur(14px);
+    border: 1px solid var(--border);
+    color: var(--text);
+    z-index: 700;
+    cursor: pointer;
+  }
+  #mobile-nav-toggle svg { width: 18px; height: 18px; }
+
+  #mobile-nav-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 550;
+  }
+  #mobile-nav-backdrop.open { display: block; }
+
+  #nav-rail {
+    position: fixed;
+    top: 0; bottom: 0; left: 0;
+    width: 220px;
+    z-index: 600;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+  }
+  #nav-rail.open { transform: translateX(0); }
+}

@@ -100,6 +100,19 @@ const sendBtn      = document.getElementById('send-btn');
 const chatSidebar        = document.getElementById('sidebar');
 const sidebarToggleBtn    = document.getElementById('sidebar-toggle-btn');
 const threadSwitcherBtn   = document.getElementById('thread-switcher-btn');
+const mobileNavToggle   = document.getElementById('mobile-nav-toggle');
+const mobileNavBackdrop = document.getElementById('mobile-nav-backdrop');
+const navRailEl         = document.getElementById('nav-rail');
+
+function closeMobileNav() {
+  navRailEl.classList.remove('open');
+  mobileNavBackdrop.classList.remove('open');
+}
+mobileNavToggle.addEventListener('click', () => {
+  navRailEl.classList.toggle('open');
+  mobileNavBackdrop.classList.toggle('open');
+});
+mobileNavBackdrop.addEventListener('click', closeMobileNav);
 const threadSwitcherName  = document.getElementById('thread-switcher-name');
 const threadSwitcherMenu  = document.getElementById('thread-switcher-menu');
 const toolbarMoreBtn      = document.getElementById('toolbar-more-btn');
@@ -130,6 +143,7 @@ function escHtml(s) {
 
 // ── Section routing ───────────────────────────────────────────────────────────
 function switchSection(name) {
+  closeMobileNav();
   const curEl = document.getElementById(`section-${activeSection}`);
   const scrollable = curEl?.querySelector('#chat-window, .editor-area, #settings-main, #home-chat-window, #dbg-log-body');
   if (scrollable) sectionScrolls[activeSection] = scrollable.scrollTop;
