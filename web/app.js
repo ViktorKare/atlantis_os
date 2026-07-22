@@ -114,6 +114,18 @@ mobileNavToggle.addEventListener('click', () => {
 });
 mobileNavBackdrop.addEventListener('click', closeMobileNav);
 
+// Chat/Models/Pipelines each have their own overlay sidebar drawer
+// (bindMobileSidebarToggle(), below). Their section is display:none while
+// inactive, so a drawer left open via .mobile-open never leaks into another
+// section — but without this reset it stays open and pops back up
+// unprompted the next time that same section is revisited. Mirrors
+// closeMobileNav()'s always-reset-on-switch behavior for the nav drawer.
+function closeMobileSidebarDrawers() {
+  document.querySelectorAll('.mobile-sidebar-backdrop.open').forEach(el => el.classList.remove('open'));
+  document.querySelectorAll('#sidebar.mobile-open, #models-sidebar.mobile-open, #pipe-sidebar.mobile-open')
+    .forEach(el => el.classList.remove('mobile-open'));
+}
+
 const MOBILE_BACK_RESET = {
   agents: () => {
     activeAgentId = null;
@@ -171,6 +183,7 @@ function escHtml(s) {
 // ── Section routing ───────────────────────────────────────────────────────────
 function switchSection(name) {
   closeMobileNav();
+  closeMobileSidebarDrawers();
   const curEl = document.getElementById(`section-${activeSection}`);
   const scrollable = curEl?.querySelector('#chat-window, .editor-area, #settings-main, #home-chat-window, #dbg-log-body');
   if (scrollable) sectionScrolls[activeSection] = scrollable.scrollTop;
