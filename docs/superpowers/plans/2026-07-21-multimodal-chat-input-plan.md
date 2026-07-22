@@ -193,6 +193,8 @@ git commit -m "Persist per-message image attachments in the messages table"
   - `modelSupportsVision(model) -> Promise<boolean>`
   - `createAttachmentStaging(stripEl) -> { addFiles(fileList, {model}), getImages(), getFileText(), isEmpty(), clear(), getItemsForTransfer(), loadTransferred(items) }`
   - `bindPasteImages(el, staging, getModel)`
+  - `openImageLightbox(src)`
+  - `renderImageThumbnails(bubbleEl, images)`
 
 - [ ] **Step 1: Add the pdf.js CDN scripts and the new module's script tag**
 
@@ -440,6 +442,23 @@ function openImageLightbox(src) {
   overlay.addEventListener('click', () => overlay.remove());
   document.body.appendChild(overlay);
 }
+
+// Renders a row of click-to-enlarge thumbnails for a sent message's base64
+// images and appends it to `bubbleEl`. Shared by web/app.js's addBubble and
+// web/code/ai-panel.js's appendBubble — no-ops if `images` is empty/null.
+function renderImageThumbnails(bubbleEl, images) {
+  if (!images || !images.length) return;
+  const imgRow = document.createElement('div');
+  imgRow.className = 'msg-image-row';
+  images.forEach(b64 => {
+    const im = document.createElement('img');
+    im.className = 'msg-image-thumb';
+    im.src = `data:image/jpeg;base64,${b64}`;
+    im.addEventListener('click', () => openImageLightbox(im.src));
+    imgRow.appendChild(im);
+  });
+  bubbleEl.appendChild(imgRow);
+}
 ```
 
 - [ ] **Step 3: Verify syntax**
@@ -534,7 +553,7 @@ git commit -m "Add shared multimodal attachment module (resize, PDF/text extract
 - Modify: `web/app.js` (DOM refs near `web/app.js:84-109`; `addBubble`/`renderChat` at `web/app.js:1340-1372`; `send()` at `web/app.js:1683-1882`)
 
 **Interfaces:**
-- Consumes: Task 2's `createAttachmentStaging`, `bindPasteImages`, `modelSupportsVision`, `openImageLightbox`; Task 1's `images` field on persisted/loaded messages; the existing `openFolderPicker` (`web/code/editor.js`, dynamically imported) and `RealFileProvider` (`web/code/providers.js`, dynamically imported) from `docs/superpowers/specs/2026-07-14-change-workspace-folder-design.md`'s already-built feature.
+- Consumes: Task 2's `createAttachmentStaging`, `bindPasteImages`, `modelSupportsVision`, `renderImageThumbnails`; Task 1's `images` field on persisted/loaded messages; the existing `openFolderPicker` (`web/code/editor.js`, dynamically imported) and `RealFileProvider` (`web/code/providers.js`, dynamically imported) from `docs/superpowers/specs/2026-07-14-change-workspace-folder-design.md`'s already-built feature.
 - Produces: `addBubble(role, content, meta, thinking, images)` — 5th param, consumed by nothing outside this task (Home reuses `send()`, which calls this internally).
 
 - [ ] **Step 1: Composer markup — un-placeholder attach-file, relabel attach-folder, add staging strip + hidden input**
@@ -732,18 +751,7 @@ function addBubble(role, content, meta = null, thinking = null, images = null) {
     bubble.textContent = content;
   }
 
-  if (role === 'user' && images && images.length) {
-    const imgRow = document.createElement('div');
-    imgRow.className = 'msg-image-row';
-    images.forEach(b64 => {
-      const im = document.createElement('img');
-      im.className = 'msg-image-thumb';
-      im.src = `data:image/jpeg;base64,${b64}`;
-      im.addEventListener('click', () => openImageLightbox(im.src));
-      imgRow.appendChild(im);
-    });
-    bubble.appendChild(imgRow);
-  }
+  if (role === 'user') renderImageThumbnails(bubble, images);
 
   wrap.appendChild(bubble);
   wrap.appendChild(buildMeta(role, content, meta));
@@ -1012,7 +1020,7 @@ git commit -m "Wire image/file attach into the Home composer, transferring stage
 - Modify: `web/code/ai-panel.js` (`createChatPane` template at `web/code/ai-panel.js:118-142`; `appendBubble` at `web/code/ai-panel.js:239-259`; `sendMessage` at `web/code/ai-panel.js:327-347`)
 
 **Interfaces:**
-- Consumes: Task 2's `createAttachmentStaging`, `bindPasteImages`, `openImageLightbox` (all ambient globals — `ai-panel.js` is an ES module but, per the existing convention in this file, references `api`/`escHtml`/`resolveOllama`/`marked`/`Prism` etc. as globals without importing them).
+- Consumes: Task 2's `createAttachmentStaging`, `bindPasteImages`, `renderImageThumbnails` (all ambient globals — `ai-panel.js` is an ES module but, per the existing convention in this file, references `api`/`escHtml`/`resolveOllama`/`marked`/`Prism` etc. as globals without importing them).
 
 - [ ] **Step 1: Template — add attach button, hidden input, staging strip**
 
@@ -1142,18 +1150,7 @@ Replace with:
     } else {
       bubble.textContent = content;
     }
-    if (role === 'user' && images && images.length) {
-      const imgRow = document.createElement('div');
-      imgRow.className = 'msg-image-row';
-      images.forEach(b64 => {
-        const im = document.createElement('img');
-        im.className = 'msg-image-thumb';
-        im.src = `data:image/jpeg;base64,${b64}`;
-        im.addEventListener('click', () => openImageLightbox(im.src));
-        imgRow.appendChild(im);
-      });
-      bubble.appendChild(imgRow);
-    }
+    if (role === 'user') renderImageThumbnails(bubble, images);
     wrap.appendChild(bubble);
     wrap.appendChild(buildMeta(role, content, null));
     if (role === 'assistant') wrap.appendChild(buildBrandMark());

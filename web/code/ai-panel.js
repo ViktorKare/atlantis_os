@@ -126,7 +126,12 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     </div>
     <div class="code-suggest-chip hidden"></div>
     <div class="code-chat-window"></div>
+    <div class="attach-staging-strip hidden"></div>
     <div class="code-chat-bar">
+      <button class="code-attach-btn icon-btn" title="Attach image or file">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+      <input type="file" class="code-attach-input" multiple hidden>
       <div class="spin-wrap"><textarea class="code-chat-input" placeholder="Ask about the code…" rows="1"></textarea></div>
       <button class="code-send-btn send-btn" title="Send">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
@@ -141,6 +146,21 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
   const spinWrap    = bodyEl.querySelector('.spin-wrap');
   const sendBtn     = bodyEl.querySelector('.code-send-btn');
   const autoBtn     = bodyEl.querySelector('.code-auto-btn');
+  const attachBtn   = bodyEl.querySelector('.code-attach-btn');
+  const attachInput = bodyEl.querySelector('.code-attach-input');
+  const attachStrip = bodyEl.querySelector('.attach-staging-strip');
+  const attachStaging = createAttachmentStaging(attachStrip);
+
+  function currentModelForAttach() {
+    const agent = agentSelect.value ? agentsList.find(a => a.id === agentSelect.value) : null;
+    return agent?.model || modelSelect.value;
+  }
+  attachBtn.addEventListener('click', () => attachInput.click());
+  attachInput.addEventListener('change', async () => {
+    await attachStaging.addFiles(attachInput.files, { model: currentModelForAttach() });
+    attachInput.value = '';
+  });
+  bindPasteImages(input, attachStaging, currentModelForAttach);
 
   const agentSelect = bodyEl.querySelector('.code-agent-select');
   let agentsList = [];
@@ -236,7 +256,7 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
   let busy = false;
   const history = [];
 
-  function appendBubble(role, content) {
+  function appendBubble(role, content, images = null) {
     const wrap = document.createElement('div');
     wrap.className = `message ${role}`;
     const bubble = document.createElement('div');
@@ -249,6 +269,7 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     } else {
       bubble.textContent = content;
     }
+    if (role === 'user') renderImageThumbnails(bubble, images);
     wrap.appendChild(bubble);
     wrap.appendChild(buildMeta(role, content, null));
     if (role === 'assistant') wrap.appendChild(buildBrandMark());
@@ -327,7 +348,7 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
   async function sendMessage() {
     if (busy) return;
     const text = input.value.trim();
-    if (!text) return;
+    if (!text && attachStaging.isEmpty()) return;
     input.value = '';
     input.style.height = 'auto';
     suggestedSkill = null;
@@ -335,8 +356,13 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     busy = true;
     sendBtn.disabled = true;
 
-    appendBubble('user', text);
-    history.push({ role: 'user', content: text });
+    const stagedImages   = attachStaging.getImages();
+    const stagedFileText = attachStaging.getFileText();
+    const sendContent    = stagedFileText ? `${text}\n\n${stagedFileText}` : text;
+    attachStaging.clear();
+
+    appendBubble('user', sendContent, stagedImages);
+    history.push({ role: 'user', content: sendContent, ...(stagedImages.length ? { images: stagedImages } : {}) });
 
     const agent = agentSelect.value ? agentsList.find(a => a.id === agentSelect.value) : null;
     const model = agent?.model || modelSelect.value;

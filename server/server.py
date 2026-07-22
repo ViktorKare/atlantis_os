@@ -304,6 +304,7 @@ def init_db():
             'ALTER TABLE pipelines ADD COLUMN max_turns      INTEGER NOT NULL DEFAULT 20',
             'ALTER TABLE pipelines ADD COLUMN work_dir       TEXT',
             'ALTER TABLE network_hosts ADD COLUMN gpu_name TEXT',
+            "ALTER TABLE messages ADD COLUMN images TEXT DEFAULT '[]'",
         ]:
             try:
                 db.execute(sql)
@@ -1393,9 +1394,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         with get_db() as db:
             for m in msgs:
                 db.execute(
-                    'INSERT INTO messages (id,thread_id,role,content,thinking,tokens,eval_duration,created_at) VALUES (?,?,?,?,?,?,?,?)',
+                    'INSERT INTO messages (id,thread_id,role,content,thinking,tokens,eval_duration,images,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
                     (m.get('id', str(time.time_ns())), thread_id, m['role'],
-                     m.get('content',''), m.get('thinking'), m.get('tokens'), m.get('evalDuration'), now)
+                     m.get('content',''), m.get('thinking'), m.get('tokens'), m.get('evalDuration'),
+                     json.dumps(m.get('images') or []), now)
                 )
             db.execute('UPDATE threads SET updated_at=? WHERE id=?', (now, thread_id))
         self._json({'ok': True})
@@ -1411,9 +1413,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         meta = None
         if m.get('tokens'):
             meta = {'eval_count': m['tokens'], 'eval_duration': m.get('eval_duration')}
+        try:
+            images = json.loads(m.get('images') or '[]')
+        except (TypeError, json.JSONDecodeError):
+            images = []
         return {
             'id': m['id'], 'role': m['role'], 'content': m['content'],
-            'thinking': m.get('thinking'), 'meta': meta,
+            'thinking': m.get('thinking'), 'meta': meta, 'images': images,
         }
 
     # ── Tasks ────────────────────────────────────────────────────────────────

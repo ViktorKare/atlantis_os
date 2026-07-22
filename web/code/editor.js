@@ -33,7 +33,7 @@ function detectLangLabel(path) {
     py: 'python', css: 'css', html: 'html', json: 'json', md: 'markdown' }[ext] || 'plaintext';
 }
 
-function openFolderPicker(fileProvider, startPath, onSelect) {
+export function openFolderPicker(fileProvider, startPath, onSelect) {
   return new Promise(resolve => {
     let browsePath = startPath || '';
     const overlay = document.createElement('div');
