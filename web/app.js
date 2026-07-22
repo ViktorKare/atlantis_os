@@ -1722,7 +1722,7 @@ async function send() {
 
   const isFirstMsg = !thread.messages.some(m => m.role === 'user');
   if (isFirstMsg) {
-    thread.name = text.length > 42 ? text.slice(0, 42) + '…' : text;
+    thread.name = text ? (text.length > 42 ? text.slice(0, 42) + '…' : text) : '(attachment)';
     renderSidebar();
   }
 
