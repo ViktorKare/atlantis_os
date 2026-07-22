@@ -348,7 +348,7 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
   async function sendMessage() {
     if (busy) return;
     const text = input.value.trim();
-    if (!text) return;
+    if (!text && attachStaging.isEmpty()) return;
     input.value = '';
     input.style.height = 'auto';
     suggestedSkill = null;

@@ -8,7 +8,9 @@
 // interaction — by then app.js has already run top-to-bottom and defined
 // them).
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+if (typeof pdfjsLib !== 'undefined') {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+}
 
 const ATTACH_MAX_IMAGE_EDGE  = 1280;
 const ATTACH_IMAGE_QUALITY   = 0.85;
@@ -69,6 +71,7 @@ async function extractTextFile(file, maxChars = ATTACH_MAX_FILE_CHARS) {
 
 // PDF text extraction via pdf.js.
 async function extractPdfFile(file, maxChars = ATTACH_MAX_FILE_CHARS) {
+  if (typeof pdfjsLib === 'undefined') throw new Error('PDF support unavailable — pdf.js failed to load');
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
   let text = '';

@@ -768,7 +768,7 @@ async function initHome() {
 
 async function sendFromHome() {
   const raw = homeInput.value.trim();
-  if (!raw) return;
+  if (!raw && homeStaging.isEmpty()) return;
 
   const pipePrefixMatch = raw.match(/^[@/](pipe|pipeline)\b\s*/i);
   if (pipePrefixMatch) {
@@ -777,6 +777,7 @@ async function sendFromHome() {
     homeInput.value = '';
     homeInput.style.height = 'auto';
     await launchAdHocPipeline(goal);
+    if (!homeStaging.isEmpty()) homeStaging.clear();
     return;
   }
 
@@ -795,6 +796,7 @@ async function sendFromHome() {
     homeInput.style.height = 'auto';
     if (brainPrefixMatch) initHomeBrainThread();
     await sendHomeBrainMessage(text);
+    if (!homeStaging.isEmpty()) homeStaging.clear();
     return;
   }
 
@@ -1704,7 +1706,7 @@ function renderAskUserCard(chatWin, params, onAnswer) {
 // ── Chat — send / stream ──────────────────────────────────────────────────────
 async function send() {
   const text = userInput.value.trim();
-  if (!text) return;
+  if (!text && chatStaging.isEmpty()) return;
 
   if (text.toLowerCase() === '/clear') {
     userInput.value = '';
