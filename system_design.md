@@ -262,6 +262,10 @@ POST /api/system/stop       no body → {ok: true}
     grounded in real agent/task/file names rather than drifting generic
   - Side panel: "Recent" (last 3 non-brain threads, click → Chat) and "Recent
     Pipeline Runs" (`GET /api/pipeline-runs/recent`, click → Pipelines)
+  - Compose card supports image and file attach (see Chat's composer bullet
+    below for the shared mechanics); in Chat mode, attaching then sending
+    transfers the staged items into the new thread's composer before
+    delegating to Chat's `send()`; not wired for `@brain`/`@pipe` sends
 
   **Chat**
   - Thread list sidebar: create, switch, delete threads; collapsible via a
@@ -282,8 +286,34 @@ POST /api/system/stop       no body → {ok: true}
     count/elapsed/t/s when enabled; a small favicon brand mark follows
     each completed assistant reply
   - Composer is a single rounded pill: textarea, then attach file/attach
-    folder/mic (placeholders) + Agent/Model pill selects + Send
-    (swaps to Abandon while generating)
+    folder/mic + Agent/Model pill selects + Send (swaps to Abandon while
+    generating). Mic remains a visual placeholder; attach file and attach
+    folder are both live:
+      • Attach file (`web/chat-attachments.js`, shared by Chat, Home, and
+        the Code chat pane): image attach is gated per-model on Ollama
+        vision capability (`modelSupportsVision()`, caches a `POST
+        /api/show` capabilities lookup); non-vision models show an inline
+        "doesn't support image input" alert and refuse to stage. Images are
+        downscaled client-side (`resizeImageFile()`, 1280px max edge,
+        re-encoded JPEG) before staging, so large photos stay bounded.
+        Generic text/code files and PDFs attach on any model — extracted
+        text (`extractTextFile()`/`extractPdfFile()`, via pdf.js) is
+        appended to the outgoing message as a fenced block, not sent as an
+        image. Unsupported binaries (e.g. `.zip`) show an inline
+        "Unsupported file type" alert and are not staged. Staged items
+        render as removable chips in a strip above the textarea; clipboard
+        paste (`bindPasteImages()`) stages images the same way as the
+        attach button. Sent images persist on the message (`messages.images`
+        column) and render as thumbnails in the sent bubble
+        (`renderImageThumbnails()`), surviving reload/restart. Capability
+        gating only blocks new attach attempts — an image already staged
+        when the model is switched to a non-vision one still sends with the
+        message; a non-vision model receiving an image errors as a normal
+        chat error bubble.
+      • Attach folder ("Change workfolder…") opens the same folder-picker
+        modal as the Code section's File-Tree pane (`openFolderPicker()`,
+        dynamically imported from `web/code/editor.js`) and calls `PUT
+        /api/code-session` to switch the active root.
   - Abandon button (AbortController) to cancel in-flight request
   - Prompt timeout (AbortController + setTimeout, default 5h, 0 = disabled)
   - "/" shortcut to focus input; auto-growing textarea
@@ -390,7 +420,11 @@ POST /api/system/stop       no body → {ok: true}
     auto-accept-mode (`Off`/`Auto-accept all`/`Auto-accept, ask on risky`)
     controls; skills UI (picker, keyword auto-suggest chip, active-skill
     status banner); ghost-text and inline diff-review are CM6 decorations;
-    `Cmd/Ctrl+K` opens a command palette
+    `Cmd/Ctrl+K` opens a command palette. Each pane also gets its own attach
+    button + staging strip (same `web/chat-attachments.js` module and
+    per-model vision-capability gating as Chat/Home — see Chat's composer
+    bullet above); staged attachments are independent per pane, since each
+    Chat pane owns its own `createAttachmentStaging()` instance
   - **Backend-wired** (`web/code/providers.js`): `RealFileProvider` drives
     the File-Tree and Editor panes off the real `/api/fs*` endpoints (same
     sandbox as Chat/Agents' `read_file`/`write_file`/`list_dir` tools);
@@ -553,7 +587,8 @@ POST /api/system/stop       no body → {ok: true}
                     file_access, web_access, tools (JSON), fallback_model,
                     role, agent_goal, expected_output (dynamic-pipeline-only, nullable)
   threads           id, name, model, agent_id, system_prompt, updated_at, tools
-  messages          id, thread_id, role, content, thinking, tokens, eval_duration, created_at
+  messages          id, thread_id, role, content, thinking, tokens, eval_duration, created_at,
+                    images (TEXT, JSON array of base64-encoded image strings, default '[]')
   tasks             id, name, model, agent_id, prompt_template, schedule (JSON), created_at
   task_runs         id, task_id, started_at, finished_at, output, tokens, error
 
