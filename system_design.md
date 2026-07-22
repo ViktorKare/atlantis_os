@@ -242,6 +242,24 @@ POST /api/system/stop       no body → {ok: true}
   Nav rail: icon-only buttons (SVG), tooltip on hover, Settings pinned to bottom.
   Active tab glows accent colour. Scroll position restored per section on switch.
 
+  Phone tier (`@media (max-width: 720px)`, single breakpoint, no separate
+  tablet tier):
+  - Nav rail becomes a hamburger-triggered overlay drawer (`#nav-rail.open`),
+    closed via backdrop tap or on navigation (`closeMobileNav()`, called from
+    `switchSection()`)
+  - Agents/Skills/Tasks/Plans switch to drill-down list↔detail: CSS `:has()`
+    shows the detail pane and hides the list once something is selected, with
+    a back button to return — no per-section JS, driven entirely by the
+    shared `.section-sidebar`/`.editor-area` structure
+  - Chat/Models/Pipelines' own sidebars become overlay drawers
+    (`.mobile-open` + shared backdrop) via one shared helper,
+    `bindMobileSidebarToggle()`
+  - Message bubbles, the composer, Home, and Settings go fluid-width instead
+    of their desktop fixed/max-width sizing
+  - Pipelines' node canvas and the code editor's pane system are left
+    desktop-shaped on purpose (no reflow) — they just get `overflow: auto`
+    so they scroll instead of clipping
+
 ### Sections
 
   **Home** (default on load)
