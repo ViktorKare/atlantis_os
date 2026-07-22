@@ -91,6 +91,11 @@ const systemPrompt = document.getElementById('system-prompt');
 const chatWindow   = document.getElementById('chat-window');
 const userInput    = document.getElementById('user-input');
 const abandonBtn   = document.getElementById('abandon-btn');
+const attachFileBtn        = document.getElementById('attach-file-btn');
+const attachFileInput      = document.getElementById('attach-file-input');
+const attachStagingStrip   = document.getElementById('attach-staging-strip');
+const changeWorkfolderBtn  = document.getElementById('attach-folder-btn');
+const chatStaging = createAttachmentStaging(attachStagingStrip);
 const sendBtn      = document.getElementById('send-btn');
 const chatSidebar        = document.getElementById('sidebar');
 const sidebarToggleBtn    = document.getElementById('sidebar-toggle-btn');
@@ -1342,11 +1347,11 @@ function renderChat() {
   const t = activeThread();
   if (!t) return;
   t.messages.filter(m => m.role !== 'system').forEach(m => {
-    addBubble(m.role, m.content, m.meta, m.thinking);
+    addBubble(m.role, m.content, m.meta, m.thinking, m.images);
   });
 }
 
-function addBubble(role, content, meta = null, thinking = null) {
+function addBubble(role, content, meta = null, thinking = null, images = null) {
   const wrap   = document.createElement('div');
   wrap.className = `message ${role}`;
 
@@ -1362,6 +1367,8 @@ function addBubble(role, content, meta = null, thinking = null) {
   } else {
     bubble.textContent = content;
   }
+
+  if (role === 'user') renderImageThumbnails(bubble, images);
 
   wrap.appendChild(bubble);
   wrap.appendChild(buildMeta(role, content, meta));
@@ -1724,13 +1731,17 @@ async function send() {
     pinnedSkill ? pinnedSkill.instructions : '',
   ].filter(Boolean);
   if (sysParts.length) apiMessages.push({ role: 'system', content: sysParts.join('\n\n') });
+  const stagedImages   = chatStaging.getImages();
+  const stagedFileText = chatStaging.getFileText();
+  const sendContent    = stagedFileText ? `${text}\n\n${stagedFileText}` : text;
+
   apiMessages.push(...thread.messages.filter(m => m.role !== 'system'));
-  apiMessages.push({ role: 'user', content: text });
+  apiMessages.push({ role: 'user', content: sendContent, ...(stagedImages.length ? { images: stagedImages } : {}) });
 
   const userMsgId = uid();
-  thread.messages.push({ id: userMsgId, role: 'user', content: text });
+  thread.messages.push({ id: userMsgId, role: 'user', content: sendContent, images: stagedImages });
   if (!thread.temporary) {
-    api('POST', `/api/threads/${thread.id}/messages`, { id: userMsgId, role: 'user', content: text }).catch(() => {});
+    api('POST', `/api/threads/${thread.id}/messages`, { id: userMsgId, role: 'user', content: sendContent, images: stagedImages }).catch(() => {});
     if (isFirstMsg) save(); // persist updated thread name
   }
 
@@ -1740,7 +1751,8 @@ async function send() {
   sendBtn.disabled  = true;
   abandonBtn.hidden = false;
 
-  addBubble('user', text);
+  addBubble('user', sendContent, null, null, stagedImages);
+  chatStaging.clear();
 
   const wrap = document.createElement('div');
   wrap.className = 'message assistant';
@@ -1887,6 +1899,23 @@ newTempChatBtn.addEventListener('click', () => createThread(true));
 
 sidebarToggleBtn.addEventListener('click', () => {
   chatSidebar.classList.toggle('collapsed');
+});
+
+attachFileBtn.addEventListener('click', () => attachFileInput.click());
+attachFileInput.addEventListener('change', async () => {
+  await chatStaging.addFiles(attachFileInput.files, { model: state.model });
+  attachFileInput.value = '';
+});
+bindPasteImages(userInput, chatStaging, () => state.model);
+
+changeWorkfolderBtn.addEventListener('click', async () => {
+  const { openFolderPicker } = await import('./code/editor.js');
+  const { RealFileProvider } = await import('./code/providers.js');
+  let currentRoot = '';
+  try { currentRoot = (await api('GET', '/api/code-session'))?.root_path || ''; } catch (_) {}
+  await openFolderPicker(new RealFileProvider(), currentRoot, async path => {
+    await api('PUT', '/api/code-session', { rootPath: path }); // throws on failure — picker shows it inline
+  });
 });
 
 function closeToolbarMenus() {

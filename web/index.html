@@ -195,12 +195,14 @@
         <div id="chat-window"></div>
         <div id="composer-wrap">
           <div id="input-area">
+            <div id="attach-staging-strip" class="attach-staging-strip hidden"></div>
             <textarea id="user-input" placeholder="Type a message... (Enter to send, Shift+Enter for newline)" rows="1"></textarea>
+            <input type="file" id="attach-file-input" multiple hidden>
             <div id="composer-row">
-              <button id="attach-file-btn" class="icon-btn placeholder" title="Attach file — coming soon">
+              <button id="attach-file-btn" class="icon-btn" title="Attach image or file">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
               </button>
-              <button id="attach-folder-btn" class="icon-btn placeholder" title="Attach folder — coming soon">
+              <button id="attach-folder-btn" class="icon-btn" title="Change workfolder">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>
               </button>
               <div id="composer-spacer"></div>
