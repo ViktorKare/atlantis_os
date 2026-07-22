@@ -355,10 +355,12 @@ body::before {
   transition: width 0.18s ease, opacity 0.18s ease;
   overflow: hidden;
 }
-#sidebar.collapsed {
-  width: 0;
-  border-right: none;
-  opacity: 0;
+@media (min-width: 721px) {
+  #sidebar.collapsed {
+    width: 0;
+    border-right: none;
+    opacity: 0;
+  }
 }
 
 #sidebar button,
