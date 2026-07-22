@@ -1955,9 +1955,32 @@ async function send() {
 newChatBtn.addEventListener('click', () => createThread(false));
 newTempChatBtn.addEventListener('click', () => createThread(true));
 
+function bindMobileSidebarToggle(toggleBtn, sidebarEl, backdropEl) {
+  toggleBtn.addEventListener('click', () => {
+    sidebarEl.classList.toggle('mobile-open');
+    backdropEl.classList.toggle('open');
+  });
+  backdropEl.addEventListener('click', () => {
+    sidebarEl.classList.remove('mobile-open');
+    backdropEl.classList.remove('open');
+  });
+}
+
 sidebarToggleBtn.addEventListener('click', () => {
   chatSidebar.classList.toggle('collapsed');
 });
+bindMobileSidebarToggle(sidebarToggleBtn, chatSidebar, document.getElementById('sidebar-mobile-backdrop'));
+
+bindMobileSidebarToggle(
+  document.getElementById('models-sidebar-toggle-btn'),
+  document.getElementById('models-sidebar'),
+  document.getElementById('models-sidebar-backdrop'),
+);
+bindMobileSidebarToggle(
+  document.getElementById('pipe-sidebar-toggle-btn'),
+  document.getElementById('pipe-sidebar'),
+  document.getElementById('pipe-sidebar-backdrop'),
+);
 
 attachFileBtn.addEventListener('click', () => attachFileInput.click());
 attachFileInput.addEventListener('change', async () => {

@@ -4263,7 +4263,9 @@ button:not(:disabled):active {
    they get overflow:auto below instead. */
 
 #mobile-nav-toggle,
-#mobile-nav-backdrop {
+#mobile-nav-backdrop,
+.mobile-sidebar-toggle-btn,
+.mobile-sidebar-backdrop {
   display: none;
 }
 
@@ -4333,5 +4335,43 @@ button:not(:disabled):active {
   }
   .section:has(.editor-area > :not(.empty-state)) .mobile-back-btn {
     display: block;
+  }
+}
+
+@media (max-width: 720px) {
+  /* Sidebar drawers: Chat's thread list, Models' installed list, Pipelines' list */
+  .mobile-sidebar-toggle-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .mobile-sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 450;
+  }
+  .mobile-sidebar-backdrop.open { display: block; }
+
+  #sidebar, #models-sidebar, #pipe-sidebar {
+    position: fixed;
+    top: 0; bottom: 0; left: 0;
+    width: 85vw;
+    max-width: 320px;
+    z-index: 500;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+  }
+  #sidebar.mobile-open, #models-sidebar.mobile-open, #pipe-sidebar.mobile-open {
+    transform: translateX(0);
   }
 }

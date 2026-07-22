@@ -175,6 +175,7 @@
         </div>
         <ul id="thread-list"></ul>
       </aside>
+      <div id="sidebar-mobile-backdrop" class="mobile-sidebar-backdrop"></div>
       <div id="chat-main">
         <header id="toolbar">
           <div id="thread-switcher-wrap">
@@ -298,12 +299,14 @@
         </div>
         <div id="pipe-run-list" class="hidden"></div>
       </div>
+      <div id="pipe-sidebar-backdrop" class="mobile-sidebar-backdrop"></div>
 
       <!-- Main canvas area -->
       <div id="pipe-main">
         <!-- Top half: canvas -->
         <div id="pipe-canvas-area">
           <div id="pipe-toolbar">
+            <button type="button" id="pipe-sidebar-toggle-btn" class="mobile-sidebar-toggle-btn" title="Pipeline list">☰</button>
             <span id="pipe-name-label" class="pipe-name-label">No pipeline selected</span>
             <div id="pipe-mode-toggle">
               <button id="pipe-mode-edit" class="pipe-mode-btn active" disabled title="Edit the pipeline">✎ Edit</button>
@@ -456,8 +459,10 @@
         <div id="models-sidebar-hdr">Installed <span id="models-installed-count"></span></div>
         <div id="models-installed-list"></div>
       </div>
+      <div id="models-sidebar-backdrop" class="mobile-sidebar-backdrop"></div>
       <div id="models-main">
         <div id="models-toolbar">
+          <button type="button" id="models-sidebar-toggle-btn" class="mobile-sidebar-toggle-btn" title="Installed models">☰</button>
           <input type="search" id="models-search-input" placeholder="Search the Ollama library… (Enter to search)">
           <div id="models-hw-chips"></div>
         </div>
