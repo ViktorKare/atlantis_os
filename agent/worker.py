@@ -966,21 +966,50 @@ def build_tools(perms):
     names = {n for g, ns in TOOL_GROUPS.items() if (perms or {}).get(g) for n in ns}
     return [t for t in PIPELINE_TOOLS if t['function']['name'] in names]
 
-def flush_chunks(job_id, pending):
-    """Write accumulated step_chunk events to the DB in one transaction."""
+def flush_chunks(job_id, pending, emit=None):
+    """Write accumulated step_chunk events to the DB in one transaction (default,
+    used by pipelines), or hand each event to `emit` one at a time (used by the
+    in-memory chat/editor/task agent runs in server.py, which have no `jobs` row)."""
     if not pending:
         return
-    lines = ''.join(json.dumps(e) + '\n' for e in pending)
-    with db_session() as db:
-        db.execute("UPDATE jobs SET output_log = output_log || ? WHERE id = ?", (lines, job_id))
+    if emit:
+        for e in pending:
+            emit(e)
+    else:
+        lines = ''.join(json.dumps(e) + '\n' for e in pending)
+        with db_session() as db:
+            db.execute("UPDATE jobs SET output_log = output_log || ? WHERE id = ?", (lines, job_id))
     pending.clear()
 
-def ollama_agentic(ollama_ep, model, messages, use_tools, step_idx, job_id, num_ctx=0, work_root=None):
+def ollama_agentic(ollama_ep, model, messages, use_tools, step_idx, job_id, num_ctx=0, work_root=None,
+                    emit=None, is_cancelled=None, client_tool_names=None, request_client_tool=None,
+                    unload_after=True, think=None, extra_options=None):
     """Agentic loop: call Ollama, execute tool calls, repeat until done.
     `use_tools` is the list of tool defs this agent may use (empty/None = no tools).
     Logs step_chunk, step_thinking and tool_call events. Returns (output_text, error).
     Streaming keeps the socket alive through long thinking phases, so timeout=300
-    is per-chunk, not a cap on total generation time."""
+    is per-chunk, not a cap on total generation time.
+
+    Optional hooks (all default to exact pipeline behavior — see server.py's
+    /api/agent/runs handler for the chat/editor/task caller that sets them):
+    - emit(event): replaces the default `log_event(job_id, event)` DB write.
+    - is_cancelled(): replaces the default `job_cancel_requested(job_id)` DB poll.
+    - client_tool_names (set): tool names that must be answered by the caller
+      (e.g. ask_user, propose_edit) instead of executed via exec_tool().
+    - request_client_tool(name, args) -> result: required if client_tool_names
+      is non-empty; blocks until the caller supplies a result.
+    - unload_after (bool): whether to evict the model from VRAM when the loop
+      ends. True (pipeline default) unloads; interactive callers pass False to
+      keep the model warm for the next turn.
+    - think (bool or None): forwarded as Ollama's `think` request field when
+      not None; omitted entirely (today's behavior) when None.
+    - extra_options (dict): merged into the Ollama `options` object alongside
+      num_ctx — e.g. {'temperature':..., 'top_p':...} from a Chat/Task agent's
+      settings, which pipelines never pass.
+    """
+    _emit = emit or (lambda e: log_event(job_id, e))
+    _is_cancelled = is_cancelled or (lambda: job_cancel_requested(job_id))
+    client_tool_names = client_tool_names or set()
     msgs = list(messages)
     all_output = []
     all_thinking = []
@@ -994,10 +1023,14 @@ def ollama_agentic(ollama_ep, model, messages, use_tools, step_idx, job_id, num_
         tool_calls = []
         pending_chunks = []
         try:
+            opts = dict(extra_options or {})
+            if num_ctx:
+                opts['num_ctx'] = num_ctx
             req_body = json.dumps({
                 'model': model, 'messages': msgs, 'stream': True,
-                **(({'options': {'num_ctx': num_ctx}}) if num_ctx else {}),
+                **(({'options': opts}) if opts else {}),
                 **(({'tools': tools}) if tools else {}),
+                **(({'think': think}) if think is not None else {}),
             }).encode()
             req = urllib.request.Request(
                 f'{ollama_ep}/api/chat', data=req_body, method='POST',
@@ -1008,9 +1041,10 @@ def ollama_agentic(ollama_ep, model, messages, use_tools, step_idx, job_id, num_
                     now = time.monotonic()
                     if now - last_cancel_check >= 2:
                         last_cancel_check = now
-                        if job_cancel_requested(job_id):
-                            flush_chunks(job_id, pending_chunks)
-                            ollama_unload(ollama_ep, model)
+                        if _is_cancelled():
+                            flush_chunks(job_id, pending_chunks, emit=emit)
+                            if unload_after:
+                                ollama_unload(ollama_ep, model)
                             return None, 'cancelled'
                     line = raw_line.decode('utf-8', errors='replace').strip()
                     if not line:
@@ -1022,21 +1056,21 @@ def ollama_agentic(ollama_ep, model, messages, use_tools, step_idx, job_id, num_
                         if text:
                             content_parts.append(text)
                             pending_chunks.append({'type': 'step_chunk', 'stepIndex': step_idx, 'chunk': text})
-                        think = msg.get('thinking', '')
-                        if think:
-                            all_thinking.append(think)
-                            pending_chunks.append({'type': 'step_thinking', 'stepIndex': step_idx, 'chunk': think})
+                        think_text = msg.get('thinking', '')
+                        if think_text:
+                            all_thinking.append(think_text)
+                            pending_chunks.append({'type': 'step_thinking', 'stepIndex': step_idx, 'chunk': think_text})
                         if len(pending_chunks) >= 20:
-                            flush_chunks(job_id, pending_chunks)
+                            flush_chunks(job_id, pending_chunks, emit=emit)
                         tcs = msg.get('tool_calls')
                         if tcs:
                             tool_calls.extend(tcs)
                     except Exception:
                         pass
         except Exception as e:
-            flush_chunks(job_id, pending_chunks)
+            flush_chunks(job_id, pending_chunks, emit=emit)
             return None, str(e)
-        flush_chunks(job_id, pending_chunks)
+        flush_chunks(job_id, pending_chunks, emit=emit)
 
         content = ''.join(content_parts)
         if content:
@@ -1053,6 +1087,11 @@ def ollama_agentic(ollama_ep, model, messages, use_tools, step_idx, job_id, num_
             break
 
         msgs.append({'role': 'assistant', 'content': content, 'tool_calls': tool_calls})
+        _emit({'type': 'tool_calls_started', 'stepIndex': step_idx, 'calls': [
+            {'tool': tc.get('function', {}).get('name', ''),
+             'args': tc.get('function', {}).get('arguments', {})}
+            for tc in tool_calls
+        ]})
         for tc in tool_calls:
             fn   = tc.get('function', {})
             name = fn.get('name', '')
@@ -1060,12 +1099,16 @@ def ollama_agentic(ollama_ep, model, messages, use_tools, step_idx, job_id, num_
             if isinstance(args, str):
                 try: args = json.loads(args)
                 except Exception: args = {}
-            result = exec_tool(name, args, allowed=allowed, work_root=work_root)
-            log_event(job_id, {'type': 'tool_call', 'stepIndex': step_idx,
-                                'tool': name, 'result': result})
-            msgs.append({'role': 'tool', 'content': json.dumps(result)})
+            if name in client_tool_names:
+                result = request_client_tool(name, args)
+            else:
+                result = exec_tool(name, args, allowed=allowed, work_root=work_root)
+            _emit({'type': 'tool_call', 'stepIndex': step_idx, 'tool': name, 'result': result})
+            content_result = result if isinstance(result, str) else json.dumps(result)
+            msgs.append({'role': 'tool', 'content': content_result})
 
-    ollama_unload(ollama_ep, model)
+    if unload_after:
+        ollama_unload(ollama_ep, model)
     final = '\n\n'.join(filter(None, all_output))
     # Thinking models can exhaust the generation in the thinking channel and
     # leave content empty — the tail of the reasoning beats returning nothing.
