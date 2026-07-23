@@ -4,7 +4,7 @@ Ollama UI — local server + SQLite persistence + task scheduler.
 Run with: python3 server.py
 """
 from __future__ import annotations
-import json, os, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib, concurrent.futures, socket, shlex
+import json, os, re, sqlite3, time, datetime, threading, http.server, urllib.request, urllib.parse, subprocess, ssl, shutil, sys, platform, contextlib, concurrent.futures, socket, shlex, queue, uuid
 from pathlib import Path
 
 BASE_DIR       = Path(__file__).parent           # server/
@@ -80,6 +80,16 @@ def resolve_ollama_endpoint(raw_endpoint=None):
         except Exception:
             continue
     return candidates[0]
+
+# ── In-memory agent runs (Chat / Editor / Task runner) ──────────────────────
+# Abandon-on-disconnect by design (see docs/superpowers/specs/2026-07-23-
+# agent-loop-server-migration-design.md) — no DB table, no durability across a
+# server restart or lost connection, unlike the DB-backed `jobs` table pipelines
+# use. A run entry: {queue, cancelled, pending_id, pending_result, resume_event,
+# pending_since}.
+_AGENT_RUNS = {}
+_AGENT_RUNS_LOCK = threading.Lock()
+_AGENT_RUN_CLIENT_TOOL_TIMEOUT = 1800  # seconds a pending client-tool call may wait before the run gives up
 
 # ── Database ───────────────────────────────────────────────────────────────────
 
@@ -835,6 +845,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._stream_job_sse(p.split('/')[3])
         elif p.startswith('/api/jobs/'):
             self._get_job(p.split('/')[3])
+        elif p.startswith('/api/agent/runs/') and p.endswith('/stream'):
+            self._agent_run_stream(p.split('/')[4])
         elif p == '/api/debug/status':      self._get_debug_status()
         elif p == '/api/fs':                self._fs_list()
         elif p == '/api/fs/read':           self._fs_read()
@@ -885,6 +897,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif p == '/api/fs/rename':         self._fs_rename(body)
         elif p == '/api/code-layouts':      self._post_code_layout(body)
         elif p == '/api/tools/exec':        self._tools_exec(body)
+        elif p == '/api/agent/runs':         self._agent_run_start(body)
+        elif p.startswith('/api/agent/runs/') and p.endswith('/tool_result'):
+            self._agent_tool_result(p.split('/')[4], body)
+        elif p.startswith('/api/agent/runs/') and p.endswith('/cancel'):
+            self._agent_run_cancel(p.split('/')[4])
         elif p == '/api/code/ghost-text':    self._code_ghost_text(body)
         elif p == '/api/debug/restart':     self._restart_worker()
         elif p == '/api/system/update':     self._post_system_update(body)
@@ -2626,6 +2643,138 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         args = (body or {}).get('args') or {}
         allowed = set((body or {}).get('allowed') or []) or None
         self._json(agent_tools.exec_tool(name, args, allowed=allowed))
+
+    def _agent_run_start(self, body):
+        """Start a server-side agentic run for Chat/Editor/Tasks (Ollama-only).
+        Spawns a background thread running worker.ollama_agentic() with its
+        emit/is_cancelled/client_tool_names hooks wired to this run's queue
+        instead of a DB-backed job row."""
+        body = body or {}
+        messages          = body.get('messages') or []
+        tools             = body.get('tools') or []
+        model             = body.get('model') or ''
+        client_tool_names = set(body.get('client_tool_names') or [])
+        client_num_ctx    = int(body.get('num_ctx') or 0)
+        think             = body.get('think')
+        extra_options     = body.get('options') or {}
+        if not model:
+            self._json({'error': 'model is required'}, 400)
+            return
+
+        run_id = str(uuid.uuid4())
+        run = {
+            'queue': queue.Queue(),
+            'cancelled': False,
+            'pending_id': None,
+            'pending_result': None,
+            'resume_event': threading.Event(),
+            'pending_since': None,
+        }
+        with _AGENT_RUNS_LOCK:
+            _AGENT_RUNS[run_id] = run
+
+        def request_client_tool(name, args):
+            call_id = str(uuid.uuid4())
+            run['pending_id']     = call_id
+            run['pending_result'] = None
+            run['pending_since']  = time.monotonic()
+            run['resume_event'].clear()
+            run['queue'].put({'type': 'tool_call_pending', 'tool': name, 'args': args, 'toolCallId': call_id})
+            while True:
+                if run['resume_event'].wait(timeout=1.0):
+                    result = run['pending_result']
+                    run['pending_id'] = None
+                    return result
+                if run['cancelled']:
+                    return {'error': 'cancelled'}
+                if time.monotonic() - run['pending_since'] > _AGENT_RUN_CLIENT_TOOL_TIMEOUT:
+                    run['cancelled'] = True
+                    return {'error': 'timed out waiting for client response'}
+
+        def worker_thread():
+            sys.path.insert(0, str(ROOT_DIR / 'agent'))
+            import worker as agent_tools
+            try:
+                with get_db() as db:
+                    rows = db.execute('SELECT key, value FROM settings').fetchall()
+                cfg = {}
+                for r in rows:
+                    try: cfg[r['key']] = json.loads(r['value'])
+                    except Exception: pass
+                ollama_ep = agent_tools.resolve_ollama_endpoint(cfg)
+                num_ctx = max(agent_tools.detect_num_ctx(cfg), client_num_ctx)
+                output, err = agent_tools.ollama_agentic(
+                    ollama_ep, model, messages, tools, 0, run_id,
+                    num_ctx=num_ctx, think=think, extra_options=extra_options,
+                    emit=run['queue'].put, is_cancelled=lambda: run['cancelled'],
+                    client_tool_names=client_tool_names, request_client_tool=request_client_tool,
+                    unload_after=False)
+            except Exception as e:
+                output, err = None, str(e)
+            if err:
+                run['queue'].put({'type': 'error', 'message': err})
+            else:
+                run['queue'].put({'type': 'done', 'content': output})
+
+        threading.Thread(target=worker_thread, daemon=True).start()
+        self._json({'run_id': run_id})
+
+    def _agent_run_stream(self, run_id):
+        with _AGENT_RUNS_LOCK:
+            run = _AGENT_RUNS.get(run_id)
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Cache-Control', 'no-cache')
+        self._cors()
+        self.end_headers()
+        if not run:
+            try:
+                self.wfile.write(b'data: {"type":"error","message":"Run not found"}\n\n')
+                self.wfile.flush()
+            except Exception:
+                pass
+            return
+        try:
+            while True:
+                try:
+                    evt = run['queue'].get(timeout=1.0)
+                except queue.Empty:
+                    continue
+                self.wfile.write(('data: ' + json.dumps(evt) + '\n\n').encode())
+                self.wfile.flush()
+                if evt.get('type') in ('done', 'error'):
+                    break
+        except Exception:
+            # Client disconnected mid-stream — self-cancel so the background
+            # thread (and any blocked request_client_tool wait) stops promptly
+            # instead of only via the idle timeout.
+            run['cancelled'] = True
+            run['resume_event'].set()
+        finally:
+            with _AGENT_RUNS_LOCK:
+                _AGENT_RUNS.pop(run_id, None)
+
+    def _agent_tool_result(self, run_id, body):
+        body = body or {}
+        with _AGENT_RUNS_LOCK:
+            run = _AGENT_RUNS.get(run_id)
+        if not run:
+            self._json({'error': 'Run not found'}, 404)
+            return
+        if not run['pending_id'] or body.get('tool_call_id') != run['pending_id']:
+            self._json({'error': 'No matching pending tool call'}, 409)
+            return
+        run['pending_result'] = body.get('result')
+        run['resume_event'].set()
+        self._json({'ok': True})
+
+    def _agent_run_cancel(self, run_id):
+        with _AGENT_RUNS_LOCK:
+            run = _AGENT_RUNS.get(run_id)
+        if run:
+            run['cancelled'] = True
+            run['resume_event'].set()
+        self._json({'ok': True})
 
     def _code_ghost_text(self, body):
         prefix = body.get('prefix', '')
