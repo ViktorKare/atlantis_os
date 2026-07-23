@@ -2681,20 +2681,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             run['resume_event'].clear()
             run['queue'].put({'type': 'tool_call_pending', 'tool': name, 'args': args, 'toolCallId': call_id})
             while True:
-                if run['resume_event'].wait(timeout=1.0):
+                woke = run['resume_event'].wait(timeout=1.0)
+                if run['cancelled']:
+                    return {'error': 'cancelled'}
+                if woke:
                     result = run['pending_result']
                     run['pending_id'] = None
                     return result
-                if run['cancelled']:
-                    return {'error': 'cancelled'}
                 if time.monotonic() - run['pending_since'] > _AGENT_RUN_CLIENT_TOOL_TIMEOUT:
                     run['cancelled'] = True
                     return {'error': 'timed out waiting for client response'}
 
         def worker_thread():
-            sys.path.insert(0, str(ROOT_DIR / 'agent'))
-            import worker as agent_tools
             try:
+                sys.path.insert(0, str(ROOT_DIR / 'agent'))
+                import worker as agent_tools
                 with get_db() as db:
                     rows = db.execute('SELECT key, value FROM settings').fetchall()
                 cfg = {}
@@ -2715,6 +2716,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 run['queue'].put({'type': 'error', 'message': err})
             else:
                 run['queue'].put({'type': 'done', 'content': output})
+
+            def _reap():
+                with _AGENT_RUNS_LOCK:
+                    _AGENT_RUNS.pop(run_id, None)
+            threading.Timer(_AGENT_RUN_CLIENT_TOOL_TIMEOUT, _reap).start()
 
         threading.Thread(target=worker_thread, daemon=True).start()
         self._json({'run_id': run_id})
