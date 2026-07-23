@@ -26,7 +26,7 @@ async function runAgentTurn({
     else signal.addEventListener('abort', cancel, { once: true });
   }
 
-  const resp = await fetch(`/api/agent/runs/${run_id}/stream`);
+  const resp = await fetch(`/api/agent/runs/${run_id}/stream`, { signal });
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';

@@ -1810,7 +1810,7 @@ async function send() {
     full = content;
     doneMeta = { elapsed: Date.now() - t0 };
   } catch (err) {
-    if (err.name === 'AbortError') stopped = true;
+    if (err.name === 'AbortError' || err.message === 'cancelled') stopped = true;
     else responseDiv.textContent = `Error: ${err.message}`;
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
