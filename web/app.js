@@ -1054,50 +1054,22 @@ async function runTask(id) {
   const timeoutId = timeoutMs > 0 ? setTimeout(() => taskAbort.abort(), timeoutMs) : null;
 
   try {
-    let looping = true;
-    while (looping) {
-      looping = false;
-      const body = { model, messages: msgs, stream: true, options: opts };
-      if (tools.length) body.tools = tools;
-      if (agent && typeof agent.think === 'boolean') body.think = agent.think;
-      const res = await fetch(`${await resolveOllama()}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: taskAbort.signal,
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      let turnToolCalls = [];
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split('\n'); buf = lines.pop();
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const chunk = JSON.parse(line);
-            if (chunk.message?.tool_calls?.length) turnToolCalls.push(...chunk.message.tool_calls);
-            if (chunk.message?.content) run.output += chunk.message.content;
-            if (chunk.done && chunk.eval_count) run.tokenCount = chunk.eval_count;
-          } catch {}
-        }
-      }
-      if (turnToolCalls.length > 0) {
-        msgs.push({ role: 'assistant', content: '', tool_calls: turnToolCalls });
-        for (const tc of turnToolCalls) {
-          const result = await executeTool(tc.function.name, tc.function.arguments ?? {}, null);
-          msgs.push({ role: 'tool', content: String(result) });
-        }
-        run.output = '';
-        looping = true;
-      }
-    }
+    const { content, error } = await runAgentTurn({
+      messages: msgs,
+      tools,
+      model,
+      numCtx: opts.num_ctx,
+      extraOptions: { temperature: opts.temperature, top_p: opts.top_p },
+      think: agent && typeof agent.think === 'boolean' ? agent.think : undefined,
+      clientToolNames: new Set(['ask_user']),
+      signal: taskAbort.signal,
+      onChunk(chunk) { run.output += chunk; },
+      onClientTool: (name, params) => askUserClientTool(null, name, params),
+    });
+    if (error) throw new Error(error);
+    run.output = content;
   } catch (err) {
-    run.error = err.name === 'AbortError' ? `Timed out after ${settings.timeoutHours}h` : err.message;
+    run.error = (err.name === 'AbortError' || err.message === 'cancelled') ? `Timed out after ${settings.timeoutHours}h` : err.message;
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
   }
@@ -1645,9 +1617,9 @@ function buildToolBlock(name, args) {
 function finishToolBlock(block, result) {
   if (!block) return;
   const text   = String(result);
-  // Every tool implementation (executeTool/executeCodeTool) prefixes failure strings with
-  // "Error:" — key off that so a failed tool call is visibly distinct from a successful one
-  // even when the model's own follow-up text doesn't correctly acknowledge the failure.
+  // Every tool result string that represents a failure is prefixed with "Error:" — key off
+  // that so a failed tool call is visibly distinct from a successful one even when the
+  // model's own follow-up text doesn't correctly acknowledge the failure.
   const failed = /^Error:/.test(text);
   block.statusEl.textContent = failed ? 'Error' : 'Done';
   block.statusEl.classList.add(failed ? 'error' : 'done');
