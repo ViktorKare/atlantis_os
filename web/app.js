@@ -4871,65 +4871,46 @@ async function sendHomeBrainMessage(text) {
 
   brainAbort = new AbortController();
   let full = '';
-  let tokens = 0;
 
   const brainToolPerms = { files: true, web: true };
   const brainTools     = buildTools(brainToolPerms);
 
+  let toolWrap = null;
+  let toolIdx  = 0;
   try {
-    let looping = true;
-    while (looping) {
-      looping = false;
-      const body = { model, messages: apiMessages, stream: true, options: { num_ctx: 8192 } };
-      if (brainTools.length) body.tools = brainTools;
-
-      const resp = await fetch(`${await resolveOllama()}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: brainAbort.signal,
-      });
-      const reader = resp.body.getReader();
-      const dec    = new TextDecoder();
-      let turnToolCalls = [];
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        for (const line of dec.decode(value).split('\n')) {
-          if (!line.trim()) continue;
-          try {
-            const chunk = JSON.parse(line);
-            if (chunk.message?.tool_calls?.length) turnToolCalls.push(...chunk.message.tool_calls);
-            full   += chunk.message?.content || '';
-            tokens  = chunk.eval_count || tokens;
-            assistantDiv.innerHTML = marked.parse(full);
-            win.scrollTop = win.scrollHeight;
-          } catch (_) {}
+    const { content, error } = await runAgentTurn({
+      messages: apiMessages,
+      tools: brainTools,
+      model,
+      numCtx: 8192,
+      clientToolNames: new Set(['ask_user']),
+      signal: brainAbort.signal,
+      onChunk(chunk) {
+        full += chunk;
+        assistantDiv.innerHTML = marked.parse(full);
+        win.scrollTop = win.scrollHeight;
+      },
+      onToolEvent(ev) {
+        if (ev.phase === 'batch_started') {
+          toolWrap = renderToolCallBubble(win, ev.calls.map(c => ({ function: { name: c.tool, arguments: c.args } })));
+          toolIdx = 0;
+        } else {
+          renderToolResultBubble(toolWrap, toolIdx++, ev.result);
+          full = '';
+          assistantDiv.innerHTML = '';
         }
-      }
-
-      if (turnToolCalls.length > 0) {
-        const toolWrap = renderToolCallBubble(win, turnToolCalls);
-        apiMessages.push({ role: 'assistant', content: '', tool_calls: turnToolCalls });
-        for (let i = 0; i < turnToolCalls.length; i++) {
-          const tc = turnToolCalls[i];
-          const result = await executeTool(tc.function.name, tc.function.arguments ?? {}, win);
-          renderToolResultBubble(toolWrap, i, result);
-          apiMessages.push({ role: 'tool', content: String(result) });
-        }
-        full = '';
-        assistantDiv.innerHTML = '';
-        looping = true;
-      }
-    }
+      },
+      onClientTool: (name, params) => askUserClientTool(win, name, params),
+    });
+    if (error) throw new Error(error);
+    full = content;
     renderWithActions(assistantDiv, full);
     win.scrollTop = win.scrollHeight;
   } catch (e) {
-    if (e.name !== 'AbortError') assistantDiv.textContent = `Error: ${e.message}`;
+    if (e.name !== 'AbortError' && e.message !== 'cancelled') assistantDiv.textContent = `Error: ${e.message}`;
   }
 
-  const assistantMsg = { id: uid(), role: 'assistant', content: full, tokens };
+  const assistantMsg = { id: uid(), role: 'assistant', content: full };
   brainThread.messages.push(assistantMsg);
   api('POST', `/api/threads/${brainThread.id}/messages`, assistantMsg).catch(() => {});
 
