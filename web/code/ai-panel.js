@@ -133,6 +133,9 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
       </button>
       <input type="file" class="code-attach-input" multiple hidden>
       <div class="spin-wrap"><textarea class="code-chat-input" placeholder="Ask about the code…" rows="1"></textarea></div>
+      <button class="code-stop-btn icon-btn hidden" title="Stop generation">
+        <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12"/></svg>
+      </button>
       <button class="code-send-btn send-btn" title="Send">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
       </button>
@@ -145,6 +148,8 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
   const input       = bodyEl.querySelector('.code-chat-input');
   const spinWrap    = bodyEl.querySelector('.spin-wrap');
   const sendBtn     = bodyEl.querySelector('.code-send-btn');
+  const stopBtn     = bodyEl.querySelector('.code-stop-btn');
+  let runAbort      = null;
   const autoBtn     = bodyEl.querySelector('.code-auto-btn');
   const attachBtn   = bodyEl.querySelector('.code-attach-btn');
   const attachInput = bodyEl.querySelector('.code-attach-input');
@@ -293,49 +298,6 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
     return { wrap, rd };
   }
 
-  function renderAskUserCard(params) {
-    return new Promise(resolve => {
-      const { question, options = [], allow_multiple: multi = false, allow_free_text: freeText = true } = params || {};
-      const wrap = document.createElement('div');
-      wrap.className = 'message ask-user-card';
-      const optsHtml = options.map((o, i) => `<button class="ask-user-opt" data-idx="${i}" type="button">${escHtml(o)}</button>`).join('');
-      wrap.innerHTML = `
-        <p class="ask-user-question">${escHtml(question || '')}</p>
-        <div class="ask-user-opts">${optsHtml}</div>
-        ${freeText ? `<div class="ask-user-free"><input type="text" class="ask-user-input" placeholder="Or type your own answer…"><button class="ask-user-submit" type="button">Send</button></div>` : ''}`;
-      chatWindow.appendChild(wrap);
-      chatWindow.scrollTop = chatWindow.scrollHeight;
-
-      const selected = new Set();
-      function finish(answer) {
-        wrap.querySelectorAll('button, input').forEach(el => el.disabled = true);
-        wrap.classList.add('answered');
-        resolve(answer);
-      }
-      wrap.querySelectorAll('.ask-user-opt').forEach(btn => {
-        btn.addEventListener('click', () => {
-          if (!multi) return finish(options[Number(btn.dataset.idx)]);
-          btn.classList.toggle('selected');
-          const idx = Number(btn.dataset.idx);
-          selected.has(idx) ? selected.delete(idx) : selected.add(idx);
-        });
-      });
-      if (multi && options.length) {
-        const doneBtn = document.createElement('button');
-        doneBtn.className = 'ask-user-submit';
-        doneBtn.textContent = 'Confirm selection';
-        doneBtn.addEventListener('click', () => finish([...selected].sort().map(i => options[i]).join(', ')));
-        wrap.querySelector('.ask-user-opts').insertAdjacentElement('afterend', doneBtn);
-      }
-      const input = wrap.querySelector('.ask-user-input');
-      const submit = wrap.querySelector('.ask-user-free .ask-user-submit');
-      if (input && submit) {
-        submit.addEventListener('click', () => { if (input.value.trim()) finish(input.value.trim()); });
-        input.addEventListener('keydown', e => { if (e.key === 'Enter' && input.value.trim()) finish(input.value.trim()); });
-      }
-    });
-  }
-
   function appendSkillBanner(skillId) {
     const skill = skills.find(s => s.id === skillId);
     if (!skill) return;
@@ -391,44 +353,41 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
 
     const { wrap: assistantWrap, rd: assistantEl } = createAssistantBubble();
     let fullText = '';
-    let thinkingTimer = null;
+    let toolWrap = null;
+    let toolIdx  = 0;
+    let thinkingTimer = startThinking(assistantEl);
     startFaviconSpin();
+    stopBtn.classList.remove('hidden');
+    runAbort = new AbortController();
     try {
-      let looping = true;
-      while (looping) {
-        looping = false;
-        fullText = '';
-        let turnToolCalls = null;
-        thinkingTimer = startThinking(assistantEl);
-        for await (const chunk of aiProvider.chat({ messages: apiMessages, model, tools })) {
-          if (typeof chunk === 'string') {
-            if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
-            fullText += chunk;
-            assistantEl.innerHTML = marked.parse(fullText) + '<span class="code-stream-cursor"></span>';
-            chatWindow.scrollTop = chatWindow.scrollHeight;
-          } else if (chunk?.toolCalls) {
-            turnToolCalls = chunk.toolCalls;
+      const { content, error } = await runAgentTurn({
+        messages: apiMessages,
+        tools,
+        model,
+        clientToolNames: new Set(['ask_user', 'propose_edit', 'propose_new_file', 'propose_rewrite']),
+        signal: runAbort.signal,
+        onChunk(chunk) {
+          if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
+          fullText += chunk;
+          assistantEl.innerHTML = marked.parse(fullText) + '<span class="code-stream-cursor"></span>';
+          chatWindow.scrollTop = chatWindow.scrollHeight;
+        },
+        onToolEvent(ev) {
+          if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
+          if (ev.phase === 'batch_started') {
+            toolWrap = renderToolCallBubble(chatWindow, ev.calls.map(c => ({ function: { name: c.tool, arguments: c.args } })));
+            toolIdx = 0;
+          } else {
+            renderToolResultBubble(toolWrap, toolIdx++, ev.result);
           }
-        }
-        clearInterval(thinkingTimer);
-        thinkingTimer = null;
-        if (turnToolCalls?.length) {
-          apiMessages.push({ role: 'assistant', content: '', tool_calls: turnToolCalls });
-          if (fullText) history.push({ role: 'assistant', content: fullText });
-          const toolWrap = renderToolCallBubble(chatWindow, turnToolCalls);
-          for (let i = 0; i < turnToolCalls.length; i++) {
-            const tc = turnToolCalls[i];
-            const result = await executeCodeTool(tc.function.name, tc.function.arguments ?? {});
-            renderToolResultBubble(toolWrap, i, result);
-            apiMessages.push({ role: 'tool', content: String(result) });
-          }
-          looping = true;
-        } else {
-          history.push({ role: 'assistant', content: fullText });
-          pinnedSkill = null;
-          skillPicker.value = '';
-        }
-      }
+        },
+        onClientTool: handleClientTool,
+      });
+      if (error) throw new Error(error);
+      fullText = content;
+      history.push({ role: 'assistant', content: fullText });
+      pinnedSkill = null;
+      skillPicker.value = '';
       if (fullText) {
         assistantEl.innerHTML = marked.parse(fullText);
         assistantEl.querySelectorAll('pre code').forEach(b => Prism.highlightElement(b));
@@ -436,11 +395,18 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
         assistantWrap.remove();
       }
     } catch (err) {
-      assistantEl.innerHTML = marked.parse(`*Error: ${err?.message || 'request failed'}*`);
+      if (err.name === 'AbortError' || err.message === 'cancelled') {
+        assistantEl.innerHTML = marked.parse((fullText || '') + '\n\n*(stopped)*');
+        if (fullText) history.push({ role: 'assistant', content: fullText });
+      } else {
+        assistantEl.innerHTML = marked.parse(`*Error: ${err?.message || 'request failed'}*`);
+      }
     } finally {
       clearInterval(thinkingTimer);
       busy = false;
       sendBtn.disabled = false;
+      stopBtn.classList.add('hidden');
+      runAbort = null;
       stopFaviconSpin();
     }
     if (assistantWrap.isConnected) {
@@ -491,25 +457,9 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
   // keys off that prefix to show a red "Error" status instead of "Done", so a failed tool
   // call is visibly distinguishable in the transcript even if the model's own reply doesn't
   // correctly acknowledge the failure.
-  async function executeCodeTool(name, params) {
+  async function handleClientTool(name, params) {
     try {
       switch (name) {
-        case 'read_file': {
-          const r = await api('POST', '/api/tools/exec', { name: 'read_file', args: params });
-          if (r?.error) return `Error: ${r.error}`;
-          return typeof r === 'string' ? r : (r.content ?? JSON.stringify(r));
-        }
-        case 'list_dir': {
-          const r = await api('POST', '/api/tools/exec', { name: 'list_files', args: params });
-          if (r?.error) return `Error: ${r.error}`;
-          return typeof r === 'string' ? r : JSON.stringify(r);
-        }
-        case 'search_files':
-        case 'run_command': {
-          const r = await api('POST', '/api/tools/exec', { name, args: params });
-          if (r?.error) return `Error: ${r.error}`;
-          return typeof r === 'string' ? r : JSON.stringify(r);
-        }
         case 'propose_edit': {
           const editorCtrl = getFocusedEditor();
           if (!editorCtrl) return 'Error: no Editor pane open';
@@ -574,7 +524,7 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
               `Do not tell the user the file has been created — it hasn't, until they accept the hunk(s) themselves.`;
         }
         case 'ask_user':
-          return await renderAskUserCard(params);
+          return await new Promise(resolve => renderAskUserCard(chatWindow, params, resolve));
         default:
           return `Error: unknown tool: ${name}`;
       }
@@ -595,6 +545,7 @@ export function createChatPane(bodyEl, { aiProvider, fileProvider, getFocusedEdi
   input.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   });
+  stopBtn.addEventListener('click', () => runAbort?.abort());
 
   return {
     el: bodyEl,
