@@ -1571,10 +1571,6 @@ const TOOL_DEFS = {
   ask_user: { type:'function', function:{ name:'ask_user', description:'Ask the user a clarifying question with clickable options and/or free text. Blocks until they answer.', parameters:{ type:'object', properties:{ question:{ type:'string' }, options:{ type:'array', items:{ type:'string' } }, allow_multiple:{ type:'boolean' }, allow_free_text:{ type:'boolean' } }, required:['question'] }}},
 };
 
-// Tools executed server-side via /api/tools/exec (shared with the pipeline worker)
-const SERVER_TOOLS = new Set(['edit_file','search_files','http_request','run_command',
-  'browser_navigate','browser_snapshot','browser_click','browser_type','browser_console','browser_screenshot']);
-
 function buildTools(toolPerms) {
   if (!toolPerms) return [];
   const out = [TOOL_DEFS.ask_user];
@@ -1617,54 +1613,14 @@ function buildToolManifest(toolPerms) {
   return lines.join('\n');
 }
 
-async function executeTool(name, params, targetWindow) {
-  try {
-    switch (name) {
-      case 'read_file': {
-        const r = await api('GET', `/api/fs/read?path=${encodeURIComponent(params.path || '')}`);
-        if (r.error) return `Error: ${r.error}`;
-        return r.content ?? '';
-      }
-      case 'write_file': {
-        const r = await api('POST', '/api/fs/write', { path: params.path, content: params.content ?? '' });
-        if (r.error) return `Error: ${r.error}`;
-        return `Written: ${params.path}`;
-      }
-      case 'list_dir': {
-        const r = await api('GET', `/api/fs?path=${encodeURIComponent(params.path || '')}`);
-        if (r.error) return `Error: ${r.error}`;
-        return (r.entries || []).map(e => `${e.type === 'dir' ? '[dir]' : '[file]'} ${e.name}`).join('\n') || '(empty)';
-      }
-      case 'web_search': {
-        const r = await api('GET', `/api/web/search?q=${encodeURIComponent(params.query || '')}`);
-        if (r?.error) return `Error: ${r.error}`;
-        return typeof r === 'string' ? r : JSON.stringify(r, null, 2);
-      }
-      case 'web_fetch': {
-        const r = await api('GET', `/api/web/fetch?url=${encodeURIComponent(params.url || '')}`);
-        if (r?.error) return `Error: ${r.error}`;
-        return typeof r === 'string' ? r : JSON.stringify(r, null, 2);
-      }
-      case 'ask_user': {
-        if (!targetWindow) {
-          return 'No interactive surface available to ask the user in this context; proceed using your best judgement.';
-        }
-        return await new Promise(resolve => {
-          renderAskUserCard(targetWindow, params, answer => resolve(answer));
-        });
-      }
-      default: {
-        if (SERVER_TOOLS.has(name)) {
-          const r = await api('POST', '/api/tools/exec', { name, args: params || {} });
-          if (r?.error) return `Error: ${r.error}`;
-          return typeof r === 'string' ? r : JSON.stringify(r, null, 2);
-        }
-        return `Error: unknown tool: ${name}`;
-      }
-    }
-  } catch (e) {
-    return `Error: ${e.message}`;
+async function askUserClientTool(targetWindow, name, params) {
+  if (name !== 'ask_user') return `Error: unknown tool: ${name}`;
+  if (!targetWindow) {
+    return 'No interactive surface available to ask the user in this context; proceed using your best judgement.';
   }
+  return await new Promise(resolve => {
+    renderAskUserCard(targetWindow, params, answer => resolve(answer));
+  });
 }
 
 function buildToolBlock(name, args) {
@@ -1714,52 +1670,6 @@ function renderToolCallBubble(chatWin, toolCalls) {
 
 function renderToolResultBubble(toolWrap, index, result) {
   finishToolBlock(toolWrap?._blocks?.[index], result);
-}
-
-function renderAskUserCard(chatWin, params, onAnswer) {
-  const { question, options = [], allow_multiple: multi = false, allow_free_text: freeText = true } = params || {};
-  const wrap = document.createElement('div');
-  wrap.className = 'message ask-user-card';
-  const optsHtml = options.map((o, i) => `
-    <button class="ask-user-opt" data-idx="${i}" type="button">${escHtml(o)}</button>`).join('');
-  wrap.innerHTML = `
-    <p class="ask-user-question">${escHtml(question || '')}</p>
-    <div class="ask-user-opts">${optsHtml}</div>
-    ${freeText ? `
-    <div class="ask-user-free">
-      <input type="text" class="ask-user-input" placeholder="Or type your own answer…">
-      <button class="ask-user-submit" type="button">Send</button>
-    </div>` : ''}`;
-  chatWin.appendChild(wrap);
-  chatWin.scrollTop = chatWin.scrollHeight;
-
-  const selected = new Set();
-  function finish(answer) {
-    wrap.querySelectorAll('button, input').forEach(el => el.disabled = true);
-    wrap.classList.add('answered');
-    onAnswer(answer);
-  }
-  wrap.querySelectorAll('.ask-user-opt').forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (!multi) return finish(options[Number(btn.dataset.idx)]);
-      btn.classList.toggle('selected');
-      const idx = Number(btn.dataset.idx);
-      selected.has(idx) ? selected.delete(idx) : selected.add(idx);
-    });
-  });
-  if (multi && options.length) {
-    const doneBtn = document.createElement('button');
-    doneBtn.className = 'ask-user-submit';
-    doneBtn.textContent = 'Confirm selection';
-    doneBtn.addEventListener('click', () => finish([...selected].sort().map(i => options[i]).join(', ')));
-    wrap.querySelector('.ask-user-opts').insertAdjacentElement('afterend', doneBtn);
-  }
-  const input = wrap.querySelector('.ask-user-input');
-  const submit = wrap.querySelector('.ask-user-free .ask-user-submit');
-  if (input && submit) {
-    submit.addEventListener('click', () => { if (input.value.trim()) finish(input.value.trim()); });
-    input.addEventListener('keydown', e => { if (e.key === 'Enter' && input.value.trim()) finish(input.value.trim()); });
-  }
 }
 
 // ── Chat — send / stream ──────────────────────────────────────────────────────
@@ -1853,81 +1763,52 @@ async function send() {
 
   const sendModel = (agent && agent.fallbackModel) ? pickModel(agent, await currentCapacity()) : state.model;
 
+  let toolWrap = null;
+  let toolIdx  = 0;
   try {
-    // Tool-call loop: keep sending until model responds with text instead of tool calls
-    let looping = true;
-    while (looping) {
-      looping = false;
-      const body = { model: sendModel, messages: apiMessages, stream: true, options };
-      if (tools.length) body.tools = tools;
-      if (agent && typeof agent.think === 'boolean') body.think = agent.think;
-
-      const res = await fetch(`${await resolveOllama()}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: abortController.signal,
-      });
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      const reader  = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      let turnToolCalls = [];
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split('\n'); buf = lines.pop();
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const chunk = JSON.parse(line);
-            if (chunk.message?.tool_calls?.length) {
-              turnToolCalls.push(...chunk.message.tool_calls);
-            }
-            if (chunk.message?.thinking) {
-              streamThinking += chunk.message.thinking;
-              if (settings.showThinking) {
-                let tb = bubble.querySelector('.thinking-block');
-                if (!tb) {
-                  tb = buildThinkingBlock('', false);
-                  bubble.insertBefore(tb, responseDiv);
-                }
-                tb.querySelector('.thinking-content').textContent = streamThinking;
-                responseDiv.textContent = '';
-              }
-              chatWindow.scrollTop = chatWindow.scrollHeight;
-            }
-            if (chunk.message?.content) {
-              full += chunk.message.content;
-              if (streamThinking) responseDiv.textContent = full;
-              else updateStreamBubble(bubble, responseDiv, full);
-              chatWindow.scrollTop = chatWindow.scrollHeight;
-            }
-            if (chunk.done) doneMeta = { ...chunk, elapsed: Date.now() - t0 };
-          } catch {}
+    const { content, error } = await runAgentTurn({
+      messages: apiMessages,
+      tools,
+      model: sendModel,
+      numCtx: options.num_ctx,
+      extraOptions: { temperature: options.temperature, top_p: options.top_p },
+      think: agent && typeof agent.think === 'boolean' ? agent.think : undefined,
+      clientToolNames: new Set(['ask_user']),
+      signal: abortController.signal,
+      onChunk(chunk) {
+        full += chunk;
+        if (streamThinking) responseDiv.textContent = full;
+        else updateStreamBubble(bubble, responseDiv, full);
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+      },
+      onThinking(chunk) {
+        streamThinking += chunk;
+        if (settings.showThinking) {
+          let tb = bubble.querySelector('.thinking-block');
+          if (!tb) {
+            tb = buildThinkingBlock('', false);
+            bubble.insertBefore(tb, responseDiv);
+          }
+          tb.querySelector('.thinking-content').textContent = streamThinking;
+          responseDiv.textContent = '';
         }
-      }
-
-      // Handle native tool calls
-      if (turnToolCalls.length > 0) {
-        const toolWrap = renderToolCallBubble(chatWindow, turnToolCalls);
-        apiMessages.push({ role: 'assistant', content: '', tool_calls: turnToolCalls });
-        for (let i = 0; i < turnToolCalls.length; i++) {
-          const tc = turnToolCalls[i];
-          const result = await executeTool(tc.function.name, tc.function.arguments ?? {}, chatWindow);
-          renderToolResultBubble(toolWrap, i, result);
-          apiMessages.push({ role: 'tool', content: String(result) });
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+      },
+      onToolEvent(ev) {
+        if (ev.phase === 'batch_started') {
+          toolWrap = renderToolCallBubble(chatWindow, ev.calls.map(c => ({ function: { name: c.tool, arguments: c.args } })));
+          toolIdx = 0;
+        } else {
+          renderToolResultBubble(toolWrap, toolIdx++, ev.result);
+          full = ''; streamThinking = ''; doneMeta = null;
+          responseDiv.textContent = '…';
         }
-        full = ''; streamThinking = ''; doneMeta = null;
-        responseDiv.textContent = '…';
-        looping = true;
-      }
-    }
+      },
+      onClientTool: (name, params) => askUserClientTool(chatWindow, name, params),
+    });
+    if (error) throw new Error(error);
+    full = content;
+    doneMeta = { elapsed: Date.now() - t0 };
   } catch (err) {
     if (err.name === 'AbortError') stopped = true;
     else responseDiv.textContent = `Error: ${err.message}`;
