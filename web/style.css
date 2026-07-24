@@ -4311,6 +4311,9 @@ button:not(:disabled):active {
     transition: transform 0.2s ease;
   }
   #nav-rail.open { transform: translateX(0); }
+
+  /* Hover-only tooltips read as stuck/odd on touch — hide them entirely. */
+  .nav-btn::after { display: none; }
 }
 
 @media (max-width: 720px) {
@@ -4408,6 +4411,7 @@ button:not(:disabled):active {
   #home-greeting { font-size: 21px; }
   #home-compose-toolbar { flex-wrap: wrap; row-gap: 6px; }
   #home-agent-select, #home-model-select { max-width: 140px; }
+  #home-mode-toggle { display: none; }
 
   /* Welcome-state only: bottom-anchor the content and put the input last,
      with the two "recent" lists above it. #home-inner's flex-direction is
