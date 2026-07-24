@@ -203,6 +203,7 @@ function switchSection(name) {
   if (scrollable) sectionScrolls[activeSection] = scrollable.scrollTop;
   if (activeSection === 'debug') stopDebug();
   if (activeSection === 'hosts') stopHostsPolling();
+  if (activeSection === 'settings') applyTheme(settings.theme || DEFAULT_THEME);
 
   document.querySelectorAll('.section').forEach(el => el.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
@@ -5123,6 +5124,7 @@ function initCode() {
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   await Promise.all([loadSettings(), loadAgents(), loadSkills(), loadTasks(), load(), loadHosts()]);
+  applyTheme(settings.theme || DEFAULT_THEME);
   maybeShowWelcomeOverlay();
   await fetchModels();
   startModelsPolling();
