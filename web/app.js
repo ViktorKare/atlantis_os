@@ -376,7 +376,47 @@ function initSettingsForm() {
   if (embModelEl) embModelEl.value = settings.embeddingModel || 'nomic-embed-text';
   const skillThreshEl = document.getElementById('setting-skill-threshold');
   if (skillThreshEl) skillThreshEl.value = settings.skillMatchThreshold ?? 0.75;
+
+  initThemeForm();
 }
+
+const THEME_FIELDS = ['bg', 'surface', 'text', 'accent', 'danger', 'success', 'warn'];
+let themeDraft = { ...DEFAULT_THEME };
+
+function setThemeFieldValue(key, hex) {
+  document.getElementById(`setting-theme-${key}`).value = hex;
+  document.getElementById(`setting-theme-${key}-swatch`).value = hex;
+}
+
+function initThemeForm() {
+  themeDraft = { ...DEFAULT_THEME, ...(settings.theme || {}) };
+  THEME_FIELDS.forEach(key => setThemeFieldValue(key, themeDraft[key]));
+}
+
+THEME_FIELDS.forEach(key => {
+  const textEl = document.getElementById(`setting-theme-${key}`);
+  const swatchEl = document.getElementById(`setting-theme-${key}-swatch`);
+
+  textEl.addEventListener('input', () => {
+    if (!isValidHex(textEl.value)) return;
+    const hex = normalizeHex(textEl.value);
+    themeDraft[key] = hex;
+    swatchEl.value = hex;
+    applyTheme(themeDraft);
+  });
+
+  swatchEl.addEventListener('input', () => {
+    themeDraft[key] = swatchEl.value;
+    textEl.value = swatchEl.value;
+    applyTheme(themeDraft);
+  });
+});
+
+document.getElementById('theme-reset-btn').addEventListener('click', () => {
+  themeDraft = { ...DEFAULT_THEME };
+  THEME_FIELDS.forEach(key => setThemeFieldValue(key, themeDraft[key]));
+  applyTheme(themeDraft);
+});
 
 document.getElementById('save-settings-btn').addEventListener('click', () => {
   settings.userName              = document.getElementById('setting-name').value.trim();
@@ -400,6 +440,7 @@ document.getElementById('save-settings-btn').addEventListener('click', () => {
   settings.embeddingModel       = document.getElementById('setting-embedding-model')?.value.trim() || 'nomic-embed-text';
   const skillThreshVal = parseFloat(document.getElementById('setting-skill-threshold')?.value);
   settings.skillMatchThreshold  = Number.isNaN(skillThreshVal) ? 0.75 : skillThreshVal;
+  settings.theme = { ...themeDraft };
   const btn = document.getElementById('save-settings-btn');
   btn.disabled = true;
   saveSettings()
