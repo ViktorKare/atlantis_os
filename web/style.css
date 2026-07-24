@@ -1923,6 +1923,32 @@ body::before {
   z-index: 1;
 }
 
+.theme-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.theme-input-row .theme-hex-input {
+  flex: 1;
+  width: auto;
+}
+
+.theme-swatch {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+
+.theme-swatch::-webkit-color-swatch-wrapper { padding: 2px; }
+.theme-swatch::-webkit-color-swatch { border: none; border-radius: 4px; }
+.theme-swatch::-moz-color-swatch { border: none; border-radius: 4px; }
+
 .input-unit {
   background: var(--bg3);
   color: var(--text-dim);
