@@ -1888,7 +1888,8 @@ body::before {
   margin-bottom: 6px;
 }
 
-.settings-field input[type="text"] {
+.settings-field input:not([type="checkbox"]),
+.settings-field select {
   width: 100%;
   background: var(--bg3);
   color: var(--text);
@@ -1899,7 +1900,11 @@ body::before {
   font-family: monospace;
   outline: none;
 }
-.settings-field input[type="text"]:focus { border-color: var(--accent); }
+.settings-field input:not([type="checkbox"]):focus,
+.settings-field select:focus { border-color: var(--accent); }
+.settings-field input[type="number"] { -moz-appearance: textfield; }
+.settings-field input[type="number"]::-webkit-outer-spin-button,
+.settings-field input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
 .input-with-unit {
   display: flex;
@@ -1910,23 +1915,13 @@ body::before {
 
 .input-with-unit input[type="number"] {
   width: 80px;
-  background: var(--bg3);
-  color: var(--text);
-  border: 1px solid var(--border);
   border-right: none;
   border-radius: 6px 0 0 6px;
-  padding: 8px 10px;
-  font-size: 14px;
-  font-family: monospace;
-  outline: none;
-  -moz-appearance: textfield;
 }
 .input-with-unit input[type="number"]:focus {
   border-color: var(--accent);
   z-index: 1;
 }
-.input-with-unit input[type="number"]::-webkit-outer-spin-button,
-.input-with-unit input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
 
 .input-unit {
   background: var(--bg3);
