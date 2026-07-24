@@ -575,6 +575,9 @@ POST /api/system/stop       no body → {ok: true}
   │   │                                welcome overlay markup
   │   ├── style.css                 — dark-only theme, all section styles
   │   ├── app.js                    — all frontend logic
+  │   ├── agent-client.js           — shared runAgentTurn()/renderAskUserCard()
+  │   │                                client for the server-side agent-run loop
+  │   │                                (Chat/Editor/Task-runner/Brain mode)
   │   └── favicon.ico
   ├── server/
   │   └── server.py                 — HTTP server + SQLite CRUD + scheduler + SSE +
@@ -779,6 +782,54 @@ POST /api/system/stop       no body → {ok: true}
 
   GET  /*                         static file serving
 
+### Agent runs (Chat / Editor / Task runner / Brain mode)
+
+  Chat, the code editor's AI panel, the Task runner, and Home's Brain mode all
+  share one server-side agentic-loop implementation with pipelines —
+  `agent/worker.py`'s `ollama_agentic()` — instead of each running its own
+  client-side copy. The loop itself is unchanged; what differs is how its
+  optional hooks are wired:
+
+  - Pipelines: `emit`/`is_cancelled` default to `log_event()`/DB polling
+    against the `jobs` table (unchanged), `unload_after=True` (model evicted
+    after every call).
+  - Chat/Editor/Task-runner/Brain: `server.py` wires `emit` to an in-memory
+    `queue.Queue`, `is_cancelled` to an in-memory flag, and passes
+    `unload_after=False` (model stays warm between turns). Run state lives
+    entirely in a module-level `_AGENT_RUNS` dict in `server.py`, keyed by a
+    UUID `run_id` — **no DB table, no durability**: a lost connection or
+    server restart abandons the run (by design; these are interactive,
+    single-session calls, not queued background jobs like pipelines).
+
+  `ask_user` (all four surfaces) and the Editor's `propose_edit` /
+  `propose_new_file` / `propose_rewrite` (diff-review tools that manipulate
+  the live Monaco editor) never run server-side — the loop calls a
+  `request_client_tool(name, args)` hook instead of `exec_tool()`, which
+  blocks (polling a `threading.Event`, bounded by a ~30-minute idle timeout)
+  until the browser answers via `POST .../tool_result`. Every other tool
+  (`read_file`, `run_command`, `search_files`, browser_* tools, etc.) executes
+  in-process via the same `exec_tool()` pipelines use.
+
+  POST /api/agent/runs            {messages, tools, model, num_ctx?, options?,
+                                   think?, client_tool_names?} → {run_id};
+                                   spawns a background thread running
+                                   ollama_agentic() with the hooks above
+  GET  /api/agent/runs/:id/stream SSE stream of the run's events (see below);
+                                   a client write failure here (browser closed)
+                                   self-cancels the run — the same flag
+                                   POST .../cancel sets
+  POST /api/agent/runs/:id/tool_result  {tool_call_id, result} → resumes a
+                                   run blocked in request_client_tool; 404 if
+                                   the run is gone, 409 if tool_call_id
+                                   doesn't match the currently-pending call
+  POST /api/agent/runs/:id/cancel  sets the run's cancelled flag → {ok:true}
+
+  Client-side, `web/agent-client.js`'s `runAgentTurn()` is the single shared
+  entry point for all four surfaces (`fetch`+`ReadableStream` against
+  `.../stream`, same convention as the pipeline SSE reader — not
+  `EventSource`), replacing what used to be four separate
+  `while(looping){ fetch ollama directly }` client-side loops.
+
 ### Worker — pipeline execution flow
 
   1. Poll jobs WHERE status='queued' (BEGIN EXCLUSIVE, claim atomically)
@@ -830,6 +881,23 @@ POST /api/system/stop       no body → {ok: true}
   Legacy (no longer emitted, UI still replays them from old logs):
   loop_spawned {childJobId, depth, stepIndex} · loop_stopped {stepIndex, depth}
   · loop_max_depth {depth, stepIndex}
+
+  Agent-run events (emitted by ollama_agentic() for both pipelines and the
+  in-memory agent runs above — pipelines silently ignore the ones their
+  replay UI doesn't switch on, since these are additive):
+  step_thinking       {stepIndex, chunk}       — <think> token stream, mirrors step_chunk
+  tool_calls_started  {stepIndex, calls:[{tool, args}]}  — fired once per round,
+                      right before that round's tool calls execute, so a
+                      client can render every call in the round as one
+                      grouped "Running…" bubble (existing tool_call events,
+                      one per call, then fill in each result)
+  tool_call_pending   {tool, args, toolCallId} — a client-only tool
+                      (ask_user/propose_*) is blocked waiting on
+                      POST .../tool_result with a matching tool_call_id
+  done                {content}                — agent-run terminal success
+                      (pipelines don't emit this; they use run_done instead)
+  error               {message}                — reused for both pipeline
+                      run-level failures and agent-run terminal failures
 
 ### Ollama endpoints used
 
