@@ -4401,8 +4401,8 @@ button:not(:disabled):active {
   .msg-image-thumb { max-width: 45vw; max-height: 45vw; }
 
   /* Home */
-  #home-main { padding: 4vh 14px 24px; }
-  #section-home.home-active #home-main { padding: 4vh 14px 24px; }
+  #home-main { padding: 4vh 14px 80px; }
+  #section-home.home-active #home-main { padding: 4vh 14px 80px; }
   #home-greeting { font-size: 21px; }
   #home-compose-toolbar { flex-wrap: wrap; row-gap: 6px; }
   #home-agent-select, #home-model-select { max-width: 140px; }
