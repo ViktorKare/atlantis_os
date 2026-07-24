@@ -1426,6 +1426,27 @@ function addBubble(role, content, meta = null, thinking = null, images = null) {
   return bubble;
 }
 
+function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text);
+  }
+  return new Promise((resolve, reject) => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy') ? resolve() : reject(new Error('execCommand copy failed'));
+    } catch (err) {
+      reject(err);
+    } finally {
+      document.body.removeChild(ta);
+    }
+  });
+}
+
 const ICON_COPY  = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
 const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
 const ICON_SPEAK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>';
@@ -1441,10 +1462,10 @@ function buildMeta(role, content, meta) {
     copyBtn.title      = 'Copy';
     copyBtn.innerHTML  = ICON_COPY;
     copyBtn.addEventListener('click', () => {
-      navigator.clipboard.writeText(content).then(() => {
+      copyText(content).then(() => {
         copyBtn.innerHTML = ICON_CHECK;
         setTimeout(() => { copyBtn.innerHTML = ICON_COPY; }, 1500);
-      });
+      }).catch(() => {});
     });
     row.appendChild(copyBtn);
 
