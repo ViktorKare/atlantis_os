@@ -80,7 +80,7 @@ body::before {
 }
 
 /* Neon gradient edge instead of a flat border */
-#nav-rail::after {
+/*#nav-rail::after {
   content: '';
   position: absolute;
   top: 0; right: -1px; bottom: 0;
@@ -90,7 +90,7 @@ body::before {
     rgba(45, 217, 232, 0.45),
     rgba(232, 150, 30, 0.30) 45%,
     rgba(154, 107, 224, 0.50));
-}
+}*/
 
 .nav-top, .nav-bottom {
   display: flex;
