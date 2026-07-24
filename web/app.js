@@ -1479,7 +1479,7 @@ function buildMeta(role, content, meta) {
 function buildBrandMark() {
   const mark = document.createElement('div');
   mark.className = 'brand-mark';
-  mark.innerHTML = '<img src="/favicon.ico" alt="">';
+  mark.innerHTML = '<img src="/favicon/favicon.ico" alt="">';
   return mark;
 }
 

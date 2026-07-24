@@ -64,7 +64,7 @@ function startThinking(el) {
 // ── Spinning favicon while busy ──────────────────────────────────────────────
 // Shared across all chat panes (module-level) so multiple panes don't fight over the tab icon.
 
-const FAVICON_HREF = '/favicon.ico';
+const FAVICON_HREF = '/favicon/favicon.ico';
 let faviconBusyCount = 0;
 let faviconSpinTimer = null;
 let faviconAngle = 0;

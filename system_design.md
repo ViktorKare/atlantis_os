@@ -30,7 +30,7 @@ supersede it.
 ### Directory layout
 
 ```
-web/            — frontend: app.js, index.html, style.css, favicon.ico
+web/            — frontend: app.js, index.html, style.css, favicon/
 server/         — server.py (HTTP API)
 agent/          — worker.py (job daemon)
 data/           — gitignored except .gitkeep: data.db, zone/, ollama/
@@ -578,7 +578,16 @@ POST /api/system/stop       no body → {ok: true}
   │   ├── agent-client.js           — shared runAgentTurn()/renderAskUserCard()
   │   │                                client for the server-side agent-run loop
   │   │                                (Chat/Editor/Task-runner/Brain mode)
-  │   └── favicon.ico
+  │   └── favicon/                  — favicon.ico, favicon-{16,32,64,128}x*.png,
+  │                                    apple-touch-icon.png,
+  │                                    android-chrome-{192,512}.png,
+  │                                    site.webmanifest. All wired from
+  │                                    index.html's <head> (icon/apple-touch-
+  │                                    icon/manifest links) plus favicon.ico
+  │                                    specifically for the home-greeting
+  │                                    logo mark and FAVICON_HREF in
+  │                                    web/code/ai-panel.js and web/app.js's
+  │                                    buildBrandMark()
   ├── server/
   │   └── server.py                 — HTTP server + SQLite CRUD + scheduler + SSE +
   │                                    atlantis.config.json loader + /api/system/*
