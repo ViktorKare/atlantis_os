@@ -70,6 +70,15 @@ let models   = [];
 let agents   = [];
 let tasks    = [];
 const CODE_SERVER_DEFAULT = `${location.protocol}//${location.hostname}:5001`; // code-server always runs on the same host as this app
+const DEFAULT_THEME = {
+  bg:      '#0d1117',
+  surface: '#1b2338',
+  text:    '#adb1bd',
+  accent:  '#e8961e',
+  danger:  '#e05c6b',
+  success: '#4ade80',
+  warn:    '#e8b84b',
+};
 let settings = { endpoint: OLLAMA, showTokenStats: true, showThinking: true, timeoutHours: 5, pipelineManagerModel: '', pipelineMaxRetries: 3, brainPrePrompt: '', agentPrePrompt: '', chatPrePrompt: '', codeServerUrl: CODE_SERVER_DEFAULT, defaultAgentId: '', defaultAgentIdFallback: '', userName: '', codeGhostTextTier: 'local', editErrorContentLimit: 8000, applyModel: '' };
 
 let abortController = null;
@@ -223,6 +232,76 @@ function switchSection(name) {
 document.querySelectorAll('.nav-btn').forEach(btn => {
   btn.addEventListener('click', () => switchSection(btn.dataset.section));
 });
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec((hex || '').trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+function rgbToHex({ r, g, b }) {
+  const clamp = v => Math.max(0, Math.min(255, Math.round(v)));
+  return '#' + [r, g, b].map(v => clamp(v).toString(16).padStart(2, '0')).join('');
+}
+
+function isValidHex(str) {
+  return /^#?[0-9a-f]{6}$/i.test((str || '').trim());
+}
+
+function normalizeHex(str) {
+  const t = str.trim().toLowerCase();
+  return t.startsWith('#') ? t : '#' + t;
+}
+
+function mixHex(hexA, hexB, t) {
+  const a = hexToRgb(hexA), b = hexToRgb(hexB);
+  return rgbToHex({
+    r: a.r + (b.r - a.r) * t,
+    g: a.g + (b.g - a.g) * t,
+    b: a.b + (b.b - a.b) * t,
+  });
+}
+
+function darkenHex(hex, amount) {
+  const c = hexToRgb(hex);
+  return rgbToHex({ r: c.r * (1 - amount), g: c.g * (1 - amount), b: c.b * (1 - amount) });
+}
+
+function hexToRgbaString(hex, alpha) {
+  const c = hexToRgb(hex);
+  return `rgba(${c.r}, ${c.g}, ${c.b}, ${alpha})`;
+}
+
+function applyTheme(theme) {
+  const t = { ...DEFAULT_THEME, ...theme };
+  const root = document.documentElement.style;
+
+  const bg2 = mixHex(t.bg, t.surface, 0.4);
+  const bg3 = t.surface;
+  const accentH = darkenHex(t.accent, 0.15);
+  const accentLight = mixHex(t.accent, '#ffffff', 0.15);
+  const textDim = mixHex(t.text, t.bg, 0.5);
+
+  root.setProperty('--bg', t.bg);
+  root.setProperty('--bg2', bg2);
+  root.setProperty('--bg3', bg3);
+  root.setProperty('--surface', t.surface);
+  root.setProperty('--text', t.text);
+  root.setProperty('--text-dim', textDim);
+  root.setProperty('--text-muted', textDim);
+  root.setProperty('--accent', t.accent);
+  root.setProperty('--accent-h', accentH);
+  root.setProperty('--danger', t.danger);
+  root.setProperty('--success', t.success);
+  root.setProperty('--warn', t.warn);
+
+  root.setProperty('--glow-accent', `0 0 16px 2px ${hexToRgbaString(t.accent, 0.30)}`);
+  root.setProperty('--grad-accent', `linear-gradient(135deg, ${accentLight} 0%, ${t.accent} 55%, ${accentH} 100%)`);
+  root.setProperty('--glass-bg2', hexToRgbaString(bg2, 0.72));
+  root.setProperty('--glass-bg3', hexToRgbaString(bg3, 0.72));
+}
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 async function loadSettings() {
