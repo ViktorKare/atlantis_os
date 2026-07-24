@@ -4279,7 +4279,7 @@ button:not(:disabled):active {
     justify-content: center;
     position: fixed;
     top: 10px;
-    left: 10px;
+    left: 12px;
     width: 36px;
     height: 36px;
     border-radius: 8px;
@@ -4304,7 +4304,8 @@ button:not(:disabled):active {
   #nav-rail {
     position: fixed;
     top: 0; bottom: 0; left: 0;
-    width: 220px;
+    width: 60px;
+    padding-top: 64px;
     z-index: 600;
     transform: translateX(-100%);
     transition: transform 0.2s ease;
@@ -4313,7 +4314,7 @@ button:not(:disabled):active {
 }
 
 @media (max-width: 720px) {
-  /* #mobile-nav-toggle sits fixed at top:10/left:10, 36x36 — nudge the
+  /* #mobile-nav-toggle sits fixed at top:10/left:12, 36x36 — nudge the
      leftmost element of each section's top bar clear of that box so the
      hamburger doesn't sit on top of a title or button. */
   #thread-switcher-wrap { margin-left: 42px; }
