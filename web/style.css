@@ -4412,6 +4412,7 @@ button:not(:disabled):active {
   #home-compose-toolbar { flex-wrap: wrap; row-gap: 6px; }
   #home-agent-select, #home-model-select { max-width: 140px; }
   #home-mode-toggle { display: none; }
+  #home-backdrop { transform: rotate(180deg); }
 
   /* Welcome-state only: bottom-anchor the content and put the input last,
      with the two "recent" lists above it. #home-inner's flex-direction is
