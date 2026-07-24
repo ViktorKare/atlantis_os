@@ -1929,12 +1929,12 @@ body::before {
   gap: 8px;
 }
 
-.theme-input-row .theme-hex-input {
+.theme-input-row input[type="text"] {
   flex: 1;
   width: auto;
 }
 
-.theme-swatch {
+.theme-input-row input[type="color"] {
   flex: none;
   width: 36px;
   height: 36px;
@@ -1945,9 +1945,9 @@ body::before {
   cursor: pointer;
 }
 
-.theme-swatch::-webkit-color-swatch-wrapper { padding: 2px; }
-.theme-swatch::-webkit-color-swatch { border: none; border-radius: 4px; }
-.theme-swatch::-moz-color-swatch { border: none; border-radius: 4px; }
+.theme-input-row input[type="color"]::-webkit-color-swatch-wrapper { padding: 2px; }
+.theme-input-row input[type="color"]::-webkit-color-swatch { border: none; border-radius: 4px; }
+.theme-input-row input[type="color"]::-moz-color-swatch { border: none; border-radius: 4px; }
 
 .input-unit {
   background: var(--bg3);
