@@ -1495,10 +1495,25 @@ function parseRaw(raw) {
   return { thinking: null, response: raw };
 }
 
+const CHAT_THINKING_PHRASES = ['Thinking', 'Working on it', 'Reasoning'];
+
+function chatThinkingIndicatorHTML() {
+  return `<span class="code-thinking"><span class="code-thinking-label">${CHAT_THINKING_PHRASES[0]}</span><span class="code-thinking-dots"></span></span>`;
+}
+
+function startChatThinking(el) {
+  let idx = 0;
+  el.innerHTML = chatThinkingIndicatorHTML();
+  return setInterval(() => {
+    idx = (idx + 1) % CHAT_THINKING_PHRASES.length;
+    const label = el.querySelector('.code-thinking-label');
+    if (label) label.textContent = CHAT_THINKING_PHRASES[idx];
+  }, 1400);
+}
+
 function buildThinkingBlock(text, collapsed = false) {
   const details  = document.createElement('details');
   details.className = 'thinking-block';
-  if (!collapsed) details.open = true;
   const summary  = document.createElement('summary');
   summary.textContent = collapsed ? 'Reasoning' : 'Thinking…';
   const body     = document.createElement('div');
@@ -1718,8 +1733,8 @@ async function send() {
   bubble.className = 'bubble';
   const responseDiv = document.createElement('div');
   responseDiv.className = 'response-content';
-  responseDiv.textContent = '…';
   bubble.appendChild(responseDiv);
+  let thinkingTimer = startChatThinking(responseDiv);
   wrap.appendChild(bubble);
   chatWindow.appendChild(wrap);
   chatWindow.scrollTop = chatWindow.scrollHeight;
@@ -1748,12 +1763,14 @@ async function send() {
       clientToolNames: new Set(['ask_user']),
       signal: abortController.signal,
       onChunk(chunk) {
+        if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
         full += chunk;
         if (streamThinking) responseDiv.textContent = full;
         else updateStreamBubble(bubble, responseDiv, full);
         chatWindow.scrollTop = chatWindow.scrollHeight;
       },
       onThinking(chunk) {
+        if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
         streamThinking += chunk;
         if (settings.showThinking) {
           let tb = bubble.querySelector('.thinking-block');
@@ -1773,7 +1790,7 @@ async function send() {
         } else {
           renderToolResultBubble(toolWrap, toolIdx++, ev.result);
           full = ''; streamThinking = ''; doneMeta = null;
-          responseDiv.textContent = '…';
+          thinkingTimer = startChatThinking(responseDiv);
         }
       },
       onClientTool: (name, params) => askUserClientTool(chatWindow, name, params),
@@ -1786,6 +1803,7 @@ async function send() {
     else responseDiv.textContent = `Error: ${err.message}`;
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
+    if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = null; }
   }
 
   const parsed = streamThinking
